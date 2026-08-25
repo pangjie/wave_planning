@@ -1,5 +1,3 @@
-import os
-
 import pytest
 
 from fastapi.testclient import TestClient
@@ -9,15 +7,9 @@ from app.api.routes import CreateJobRequest
 from app.main import app
 
 
-def test_health_and_public_config() -> None:
+def test_health() -> None:
     with TestClient(app) as client:
         assert client.get("/api/health").json() == {"status": "ok"}
-        config = client.get("/api/config").json()
-        assert config["template_name"] == "渠道拆分"
-        assert config["downloads_dir"].endswith("downloads")
-        assert config["secondary_downloads_dir"] == os.path.expanduser("~/Downloads")
-        assert config["wave_target_url"] == "https://wms.xlwms.com/outbound/wave"
-        assert config["max_concurrent_waves"] == 5
 
 
 def test_production_export_requires_confirmation() -> None:

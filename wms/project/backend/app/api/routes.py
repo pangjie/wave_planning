@@ -8,7 +8,6 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, model_validator
 
 from app.automation.common import WAVE_NO_PATTERN
-from app.core.config import AutomationConfig
 from app.services.job_manager import (
     ActiveJobConflictError,
     BrowserMode,
@@ -89,10 +88,6 @@ def get_manager(request: Request) -> JobManager:
     return request.app.state.job_manager
 
 
-def get_automation_config(request: Request) -> AutomationConfig:
-    return request.app.state.automation_config
-
-
 @router.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
@@ -115,21 +110,6 @@ async def clear_wave_records(request: Request) -> dict[str, str]:
     data_dir = request.app.state.settings.browser_profile_dir.parent
     clear_records(data_dir)
     return {"status": "ok"}
-
-
-@router.get("/config")
-async def public_config(
-    request: Request,
-    config: AutomationConfig = Depends(get_automation_config),
-) -> dict[str, str | int]:
-    return {
-        "target_url": config.target_url,
-        "template_name": config.template_name,
-        "downloads_dir": str(request.app.state.settings.downloads_dir),
-        "secondary_downloads_dir": str(request.app.state.settings.secondary_downloads_dir),
-        "wave_target_url": config.wave_picking.target_url,
-        "max_concurrent_waves": config.wave_picking.max_concurrent_waves,
-    }
 
 
 @router.post("/jobs", response_model=JobRecord, status_code=status.HTTP_202_ACCEPTED)
@@ -173,11 +153,9 @@ async def cancel_job(job_id: str, manager: JobManager = Depends(get_manager)) ->
 async def save_export(request: Request, filename: str = "") -> dict[str, str]:
     """保存规划工具生成的 Excel 到项目输出目录，供日志提供下载链接。
 
-    仅接受 xlsx 字节流；文件名必须形如 波次规划YYYYMMDD.xlsx。
+    仅接受 xlsx 字节流；文件名做安全清洗后补全 .xlsx 后缀。
     """
-    import re as _re
-
-    name = _re.sub(r"[^\w\u4e00-\u9fff.()-]", "_", filename or "波次规划.xlsx").strip()
+    name = re.sub(r"[^\w\u4e00-\u9fff.()-]", "_", filename or "波次规划.xlsx").strip()
     if not name.endswith(".xlsx"):
         name += ".xlsx"
     body = await request.body()

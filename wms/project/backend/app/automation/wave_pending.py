@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import re
 from dataclasses import dataclass
 
 from playwright.async_api import Locator, Page, TimeoutError as PlaywrightTimeoutError

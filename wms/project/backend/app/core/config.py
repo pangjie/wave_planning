@@ -135,10 +135,7 @@ class WaveGenerationConfig(BaseModel):
     page_size_option: str
     multi_search_max_lines: int = Field(ge=1, le=700)
     wave_no_pattern: str
-    observe_pause_ms: int = Field(default=0, ge=0)
     search_verify_wait_ms: int = Field(default=4000, ge=0, le=60000)
-    manual_step_mode: bool = False
-    step_control_file: str = 'data/step-control.json'
     selectors: WaveGenerationSelectorConfig
     timeouts_ms: WaveGenerationTimeoutConfig
 
@@ -160,7 +157,6 @@ class Settings(BaseModel):
     automation_config_path: Path
     browser_profile_dir: Path
     downloads_dir: Path
-    secondary_downloads_dir: Path
     outputs_dir: Path
     headless: bool = False
     browser_channel: str | None = None
@@ -177,9 +173,6 @@ class Settings(BaseModel):
                 os.getenv("WMS_BROWSER_PROFILE", root / "data" / "browser-profile")
             ),
             downloads_dir=Path(os.getenv("WMS_DOWNLOADS_DIR", root / "downloads")),
-            secondary_downloads_dir=Path(
-                os.getenv("WMS_SECONDARY_DOWNLOADS_DIR", str(Path.home() / "Downloads"))
-            ),
             outputs_dir=Path(os.getenv("WMS_OUTPUTS_DIR", root / "outputs")),
             headless=os.getenv("WMS_HEADLESS", "false").lower() in {"1", "true", "yes"},
             browser_channel=channel,

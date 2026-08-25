@@ -96,7 +96,6 @@
       "generate_wave_button": "button:has-text(\"生成波次\")",
       "generate_by_selection_item": ".ak-button-group-popover li.ak-dropdown-item:has-text(\"按勾选数据\")",
       "wave_dialog": ".el-dialog, .vxe-modal--wrapper",
-      "sort_rule_add_button": "button:has-text(\"添加规则\")",
       "wave_confirm_button": ".el-dialog:visible button:has-text(\"确定\"), .vxe-modal--wrapper:visible button:has-text(\"确定\")",
       "result_text": ".el-dialog:visible, .vxe-modal--wrapper:visible, .el-message-box:visible",
       "loading_mask": ".el-loading-mask",
@@ -115,9 +114,6 @@
       "dialog": 15000,
       "wave_generation": 180000
     },
-    "observe_pause_ms": 0,
-    "search_verify_wait_ms": 4000,
-    "manual_step_mode": false,
-    "step_control_file": "step-control.json"
+    "search_verify_wait_ms": 4000
   }
 }

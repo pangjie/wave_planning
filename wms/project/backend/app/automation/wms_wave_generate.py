@@ -3,9 +3,8 @@ from __future__ import annotations
 import json
 import re
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 
 from playwright.async_api import Locator, Page, TimeoutError as PlaywrightTimeoutError
 
@@ -41,9 +40,6 @@ class WaveGenerateResult:
     segments: list[SegmentWaveOutcome]
     generated_count: int
     failed_count: int
-
-    def as_dict(self) -> dict[str, object]:
-        return asdict(self)
 
 
 def chunk_list(items: list[str], size: int) -> list[list[str]]:
@@ -134,8 +130,6 @@ class WmsWaveGenerateAutomation:
                     wave_no = await self._generate_one(
                         page, order_nos, label, progress,
                         prev_expected=prev_count,
-                        observe_pause_ms=cfg.observe_pause_ms,
-                        step_prefix=f"seg{index}",
                     )
                     outcomes.append(SegmentWaveOutcome(
                         channel=channel, seg_name=seg_name,
@@ -290,8 +284,6 @@ class WmsWaveGenerateAutomation:
         progress: ProgressCallback,
         *,
         prev_expected: int | None = None,
-        observe_pause_ms: int = 0,
-        step_prefix: str = "seg",
     ) -> str | None:
         cfg = self.config
         sel = cfg.selectors
@@ -324,20 +316,11 @@ class WmsWaveGenerateAutomation:
                 prev_expected=prev_expected, progress=progress,
             )
 
-        await self._await_manual_confirm(
-            page, progress, f"{step_prefix}:search_verified",
-            "多项搜索与结果核对", label,
-        )
-
         # 3) 全选当前列表
         select_all = page.locator(sel.select_all_checkbox + ":visible").first
         if await select_all.count() != 1:
             raise AutomationError("表头全选框不唯一或不可见。")
         await select_all.click(timeout=timeouts.action)
-        await self._await_manual_confirm(
-            page, progress, f"{step_prefix}:selected_all",
-            "勾选全部搜索结果", label,
-        )
 
         # 4) 生成波次 → 按勾选数据
         gen_btn = page.locator(sel.generate_wave_button)
@@ -348,20 +331,9 @@ class WmsWaveGenerateAutomation:
         if await by_selection.count() != 1:
             raise AutomationError("“按勾选数据”选项不唯一或不存在。")
         await by_selection.click(timeout=timeouts.action)
-        await self._await_manual_confirm(
-            page, progress, f"{step_prefix}:config_open",
-            "打开生成波次配置框", label,
-        )
-
-        # 4.5) 人工观察暂停（调试用）：保持浏览器打开，暂停结束后自动继续
-        await self._observe_pause(page, progress, observe_pause_ms)
 
         # 5) 排序规则：确保两条规则（库位 → SKU*数量）
         await self._ensure_sort_rules(page, label)
-        await self._await_manual_confirm(
-            page, progress, f"{step_prefix}:before_confirm",
-            "配置框规则核对", label,
-        )
 
         # 6) 确定生成（生产提交点，唯一一次）
         confirm = page.locator(sel.wave_confirm_button).first
@@ -375,10 +347,6 @@ class WmsWaveGenerateAutomation:
         if await confirm.is_disabled():
             raise AutomationError("生成波次“确定”按钮不可用。")
         await confirm.click(timeout=timeouts.action)
-        await self._await_manual_confirm(
-            page, progress, f"{step_prefix}:after_confirm",
-            "点击确定并等待波次生成", label,
-        )
 
         # 7) 提取波次号
         wave_no = await self._extract_wave_no(page, label)
@@ -420,72 +388,6 @@ class WmsWaveGenerateAutomation:
                 except Exception:
                     pass
             await page.wait_for_timeout(600)
-
-    async def _observe_pause(
-        self, page: Page, progress: ProgressCallback, pause_ms: int
-    ) -> None:
-        """暂停供人工观察（生产调试用）：保持浏览器打开，结束后自动继续。"""
-        if pause_ms <= 0:
-            return
-        await page.wait_for_timeout(1000)
-        try:
-            await page.screenshot(path="outputs/observe-pause.png", full_page=False)
-        except Exception:
-            pass
-        seconds = pause_ms // 1000
-        await progress(
-            "observing",
-            f"已在“按勾选数据”后暂停 {seconds} 秒供人工观察（浏览器保持打开，截图 outputs/observe-pause.png）。"
-            "暂停结束后将自动继续；如需中止，请点击“取消任务”关闭浏览器。",
-        )
-        await page.wait_for_timeout(pause_ms)
-
-    async def _await_manual_confirm(
-        self,
-        page: Page,
-        progress: ProgressCallback,
-        step_id: str,
-        step_desc: str,
-        label: str,
-    ) -> None:
-        """人工逐步确认模式：完成一步后等待控制文件放行，绝不自行进入下一步。"""
-        cfg = self.config
-        if not cfg.manual_step_mode:
-            return
-        control_path = Path(cfg.step_control_file)
-        if not control_path.is_absolute():
-            control_path = self.settings.browser_profile_dir.parent / control_path
-        await progress(
-            "awaiting_confirm",
-            f"分段 {label}：已完成「{step_desc}」，等待人工确认后继续（步骤 {step_id}）。"
-            f"控制文件：{control_path}",
-        )
-        deadline = time.monotonic() + 2 * 3600
-        while True:
-            await page.wait_for_timeout(2000)
-            data: dict[str, object] = {}
-            try:
-                data = json.loads(control_path.read_text("utf-8"))
-            except Exception:
-                pass
-            if (
-                isinstance(data, dict)
-                and data.get("step") == step_id
-                and data.get("continue") is True
-            ):
-                try:
-                    control_path.write_text(
-                        json.dumps({"step": None, "continue": False}, ensure_ascii=False),
-                        "utf-8",
-                    )
-                except Exception:
-                    pass
-                await progress("confirmed", f"分段 {label}：步骤 {step_id} 已人工确认，继续。")
-                return
-            if time.monotonic() > deadline:
-                raise AutomationError(
-                    f"分段 {label}：等待人工确认 {step_id} 超过 2 小时，任务中止。"
-                )
 
     async def _search_chunk(
         self,

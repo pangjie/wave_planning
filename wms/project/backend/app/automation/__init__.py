@@ -2,7 +2,6 @@
 
 from app.automation.wms_export import ExportResult, WmsExportAutomation
 from app.automation.wms_wave_generate import (
-    SegmentWaveOutcome,
     WaveGenerateResult,
     WmsWaveGenerateAutomation,
 )
@@ -18,7 +17,6 @@ __all__ = [
     "WavePickResult",
     "WavePrintResult",
     "WaveGenerateResult",
-    "SegmentWaveOutcome",
     "WmsExportAutomation",
     "WmsWavePickAutomation",
     "WmsWavePrintAutomation",

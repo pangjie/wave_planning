@@ -5,7 +5,7 @@ import base64
 import json
 from pathlib import Path
 
-XLSX = Path(__file__).resolve().parents[2] / "sample" / "ParcelOutbound_20260815193913.xlsx"
+XLSX = Path(__file__).resolve().parents[3] / "sample" / "ParcelOutbound_20260815193913.xlsx"
 OUT = Path(__file__).resolve().parents[1] / "outputs" / "auto-run-result.json"
 
 

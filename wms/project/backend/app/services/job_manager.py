@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 from dataclasses import asdict
 from datetime import date, datetime
@@ -123,9 +124,12 @@ class JobManager:
                 if self._same_day(job.created_at)
             ]
             data.sort(key=lambda item: item.get("created_at", ""))
-            self._jobs_file.write_text(
+            # 原子写：先写临时文件再替换，避免崩溃留下半截 jobs.json
+            tmp = self._jobs_file.with_suffix(".json.tmp")
+            tmp.write_text(
                 json.dumps(data, ensure_ascii=False, indent=1), "utf-8"
             )
+            os.replace(tmp, self._jobs_file)
         except Exception:
             pass
 
@@ -269,5 +273,7 @@ class JobManager:
             job.status = "failed"
             job.error = str(exc)
             job.events.append(JobEvent(stage="failed", message=str(exc)))
+            # 失败终态必须落盘：否则进程重启后失败结果丢失，操作员会误以为任务仍在运行
+            self._persist(force=True)
         finally:
             job.updated_at = datetime.now().astimezone().isoformat()
