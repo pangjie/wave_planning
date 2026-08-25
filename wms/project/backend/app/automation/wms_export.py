@@ -13,6 +13,7 @@ from app.automation.common import (
     first_page,
     open_browser_context,
     resolve_headless,
+    wait_for_input_value,
     wait_for_loading,
 )
 from app.automation.export_task_center import ExportTaskCenter
@@ -152,10 +153,10 @@ class WmsExportAutomation:
         # Element UI fills the saved template asynchronously after the dialog is visible.
         # Give that model value a short grace period so we do not open a dropdown while
         # the component is still re-rendering (the cause of the original flaky click).
-        current = await self._wait_for_template_value(
+        current = await wait_for_input_value(
             template_input,
             cfg.template_name,
-            timeout_ms=min(5000, timeouts.action),
+            min(5000, timeouts.action),
         )
         if current != cfg.template_name:
             try:
@@ -182,10 +183,10 @@ class WmsExportAutomation:
                 if current != cfg.template_name:
                     raise AutomationError(f"模板选择控件响应超时，未能确认“{cfg.template_name}”。") from exc
 
-            current = await self._wait_for_template_value(
+            current = await wait_for_input_value(
                 template_input,
                 cfg.template_name,
-                timeout_ms=timeouts.action,
+                timeouts.action,
             )
 
         if current != cfg.template_name:
@@ -193,22 +194,6 @@ class WmsExportAutomation:
                 f"模板校验失败：期望“{cfg.template_name}”，实际为“{current or '空'}”。"
             )
         return current
-
-    @staticmethod
-    async def _wait_for_template_value(
-        template_input: Locator,
-        expected: str,
-        timeout_ms: int,
-    ) -> str:
-        """Poll the live input property while the Vue component settles."""
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + timeout_ms / 1000
-        current = ""
-        while True:
-            current = (await template_input.input_value()).strip()
-            if current == expected or loop.time() >= deadline:
-                return current
-            await asyncio.sleep(0.1)
 
     async def _wait_for_required_template_fields(self, dialog: Locator) -> list[str]:
         """Wait until the selected template's asynchronously loaded fields are stable."""

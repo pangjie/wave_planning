@@ -47,7 +47,6 @@ class PendingWaveCatalog:
         )
         return waves
 
-    # 返回的 Locator 仅供打印流程使用，拣货侧调用后直接丢弃
     async def prepare_page(
         self,
         page: Page,
@@ -161,7 +160,12 @@ class PendingWaveCatalog:
             "waiting_pending_waves",
             f"{label}：正在等待“{target_tab_text}”波次列表加载完成。",
         )
-        await self._wait_for_loading(page)
+        await wait_for_loading(
+            page,
+            self.config.wave_picking.selectors.loading_mask,
+            self.config.wave_picking.timeouts_ms.navigation,
+            "波次页面加载超时，仍检测到处理遮罩。",
+        )
         rows = page.locator(selectors.wave_rows)
         if allow_empty:
             return rows
@@ -246,7 +250,12 @@ class PendingWaveCatalog:
         deadline = loop.time() + cfg.timeouts_ms.navigation / 1000
         while loop.time() < deadline:
             if (await active_page.inner_text()).strip() != previous_page:
-                await self._wait_for_loading(page)
+                await wait_for_loading(
+                    page,
+                    self.config.wave_picking.selectors.loading_mask,
+                    self.config.wave_picking.timeouts_ms.navigation,
+                    "波次页面加载超时，仍检测到处理遮罩。",
+                )
                 await page.locator(selectors.wave_rows).first.wait_for(
                     state="visible",
                     timeout=cfg.timeouts_ms.navigation,
@@ -255,15 +264,6 @@ class PendingWaveCatalog:
             await asyncio.sleep(0.1)
         raise AutomationError("待拣货分页切换超时，已停止操作。")
 
-    async def _wait_for_loading(self, page: Page) -> None:
-        await wait_for_loading(
-            page,
-            self.config.wave_picking.selectors.loading_mask,
-            self.config.wave_picking.timeouts_ms.navigation,
-            "波次页面加载超时，仍检测到处理遮罩。",
-        )
-
-    @staticmethod
     async def _read_waves(rows: Locator) -> list[PendingWave]:
         raw = await rows.evaluate_all(
             r"""

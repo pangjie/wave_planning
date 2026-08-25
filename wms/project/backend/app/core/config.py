@@ -68,6 +68,7 @@ class WavePickingConfig(BaseModel):
     target_url: str
     pending_tab_text: str
     max_concurrent_waves: int = Field(ge=5, le=5)  # 生产安全要求固定为 5（代码另有运行时守卫）
+    max_selected_waves: int = Field(default=500, gt=0, le=1000)
     selectors: WaveSelectorConfig
     timeouts_ms: WaveTimeoutConfig
 

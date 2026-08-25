@@ -15,9 +15,13 @@ def make_automation() -> WmsExportAutomation:
 
 
 @pytest.mark.asyncio
-async def test_template_selection_uses_stable_keyboard_contract() -> None:
+async def test_template_selection_uses_stable_keyboard_contract(monkeypatch) -> None:
+    import app.automation.wms_export as mod
+
     automation = make_automation()
-    automation._wait_for_template_value = AsyncMock(side_effect=["", "渠道拆分"])
+    monkeypatch.setattr(
+        mod, "wait_for_input_value", AsyncMock(side_effect=["", "渠道拆分"])
+    )
 
     template_input = MagicMock()
     template_input.count = AsyncMock(return_value=1)

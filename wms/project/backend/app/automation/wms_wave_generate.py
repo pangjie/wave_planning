@@ -5,6 +5,7 @@ import re
 import time
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Literal
 
 from playwright.async_api import Locator, Page, TimeoutError as PlaywrightTimeoutError
 
@@ -17,7 +18,12 @@ from app.automation.common import (
     resolve_headless,
     wait_for_loading,
 )
-from app.core.config import Settings, WaveGenerationConfig
+from app.core.config import (
+    Settings,
+    WaveGenerationConfig,
+    WaveGenerationSelectorConfig,
+    WaveGenerationTimeoutConfig,
+)
 
 
 @dataclass
@@ -33,7 +39,7 @@ class SegmentWaveOutcome:
 
 @dataclass
 class WaveGenerateResult:
-    mode: str
+    mode: Literal["generate_waves"]
     current_url: str
     message: str
     completed_at: str
@@ -520,7 +526,12 @@ class WmsWaveGenerateAutomation:
             "搜索结果可能未正确生效或被清空，已停止。"
         )
 
-    async def _read_search_total(self, page: Page, sel, timeouts) -> int | None:
+    async def _read_search_total(
+        self,
+        page: Page,
+        sel: WaveGenerationSelectorConfig,
+        timeouts: WaveGenerationTimeoutConfig,
+    ) -> int | None:
         """读取右下角“共 X 条”；解析失败短重试后返回 None。"""
         for _ in range(30):
             try:

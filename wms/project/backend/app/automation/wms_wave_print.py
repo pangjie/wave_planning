@@ -25,8 +25,11 @@ from app.automation.common import (
     ProgressCallback,
     WAVE_NO_PATTERN,
     first_page,
+    normalize_wave_nos,
     open_browser_context,
     resolve_headless,
+    wait_for_input_value,
+    wait_for_loading,
 )
 from app.automation.pdf_centering import PdfCenteringError, center_pdf_visible_content
 from app.automation.wave_pending import PendingWaveCatalog, WaveNotFoundError
@@ -179,16 +182,10 @@ class WmsWavePrintAutomation:
         wave_nos: list[str],
     ) -> list[str]:
         printing = self.config.wave_printing
-        selected: list[str] = []
-        seen: set[str] = set()
-        for raw in wave_nos:
-            wave_no = raw.strip()
-            if not wave_no or wave_no in seen:
-                continue
+        selected = normalize_wave_nos(wave_nos)
+        for wave_no in selected:
             if not WAVE_NO_PATTERN.fullmatch(wave_no):
                 raise AutomationError(f"波次号格式异常：{wave_no}")
-            seen.add(wave_no)
-            selected.append(wave_no)
         if not selected:
             raise AutomationError("请至少输入一个波次号。")
         if len(selected) > printing.max_selected_waves:
@@ -500,7 +497,12 @@ class WmsWavePrintAutomation:
                         cfg.selectors.print_template_container
                     )
                     if await container.count() == 1 and await container.is_visible():
-                        await self._wait_for_loading(surface)
+                        await wait_for_loading(
+                            surface,
+                            cfg.selectors.loading_mask,
+                            cfg.timeouts_ms.render,
+                            "打印中心加载超时，仍检测到处理遮罩。",
+                        )
                         return candidate, surface
             await asyncio.sleep(0.15)
 
@@ -622,7 +624,9 @@ class WmsWavePrintAutomation:
                     f"无法唯一选择打印模板“{expected}”，已停止操作。"
                 )
             await option.click(timeout=cfg.timeouts_ms.action)
-            current = await self._wait_for_input_value(template_input, expected)
+            current = await wait_for_input_value(
+                template_input, expected, cfg.timeouts_ms.action
+            )
         if current != expected:
             raise AutomationError(
                 f"打印模板校验失败：当前为“{current or '空'}”，要求“{expected}”。"
@@ -666,7 +670,12 @@ class WmsWavePrintAutomation:
             f"波次 {wave_no}：模板已确认，正在触发打印。",
         )
         await print_button.click(timeout=cfg.timeouts_ms.action)
-        await self._wait_for_loading(surface)
+        await wait_for_loading(
+            surface,
+            cfg.selectors.loading_mask,
+            cfg.timeouts_ms.render,
+            "打印中心加载超时，仍检测到处理遮罩。",
+        )
 
         loop = asyncio.get_running_loop()
         deadline = loop.time() + min(cfg.timeouts_ms.render / 1000, 2)
@@ -963,29 +972,6 @@ class WmsWavePrintAutomation:
                 "previewVerified": False,
             }
         return snapshot
-
-    async def _wait_for_input_value(self, locator: Locator, expected: str) -> str:
-        cfg = self.config.wave_printing
-        loop = asyncio.get_running_loop()
-        deadline = loop.time() + cfg.timeouts_ms.action / 1000
-        current = ""
-        while loop.time() < deadline:
-            current = (await locator.input_value()).strip()
-            if current == expected:
-                return current
-            await asyncio.sleep(0.1)
-        return current
-
-    async def _wait_for_loading(self, page: Page | Frame) -> None:
-        try:
-            await page.locator(
-                self.config.wave_printing.selectors.loading_mask
-            ).wait_for(
-                state="hidden",
-                timeout=self.config.wave_printing.timeouts_ms.render,
-            )
-        except PlaywrightTimeoutError as exc:
-            raise AutomationError("打印中心加载超时，仍检测到处理遮罩。") from exc
 
 
 def _print_candidate_pages(

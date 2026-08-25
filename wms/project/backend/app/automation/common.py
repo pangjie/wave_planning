@@ -1,11 +1,19 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 import re
 
-from playwright.async_api import BrowserContext, Page, TimeoutError as PlaywrightTimeoutError, async_playwright
+from playwright.async_api import (
+    BrowserContext,
+    Frame,
+    Locator,
+    Page,
+    TimeoutError as PlaywrightTimeoutError,
+    async_playwright,
+)
 
 from app.core.config import Settings
 
@@ -36,7 +44,7 @@ async def first_page(context: BrowserContext) -> Page:
 
 
 async def wait_for_loading(
-    page: Page,
+    page: Page | Frame,
     selector: str,
     timeout_ms: int,
     err_message: str,
@@ -46,6 +54,34 @@ async def wait_for_loading(
         await page.locator(selector).wait_for(state="hidden", timeout=timeout_ms)
     except PlaywrightTimeoutError as exc:
         raise AutomationError(err_message) from exc
+
+
+async def wait_for_input_value(
+    locator: Locator, expected: str, timeout_ms: int
+) -> str:
+    """轮询输入框当前值直到等于期望或超时，返回最后一次读到的值（调用方负责比对报错）。"""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout_ms / 1000
+    current = ""
+    while loop.time() < deadline:
+        current = (await locator.input_value()).strip()
+        if current == expected:
+            return current
+        await asyncio.sleep(0.1)
+    return current
+
+
+def normalize_wave_nos(raw_items: list[str]) -> list[str]:
+    """去空白、去空项、按出现顺序去重；格式与数量校验由调用方按各自错误语义负责。"""
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_items:
+        wave_no = str(raw).strip()
+        if not wave_no or wave_no in seen:
+            continue
+        seen.add(wave_no)
+        out.append(wave_no)
+    return out
 
 
 @asynccontextmanager

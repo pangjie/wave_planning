@@ -8,6 +8,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, model_validator
 
 from app.automation.common import WAVE_NO_PATTERN
+from app.core.config import get_settings
 from app.services.job_manager import (
     ActiveJobConflictError,
     BrowserMode,
@@ -74,7 +75,12 @@ class CreateJobRequest(BaseModel):
             if not normalized:
                 if self.mode == "print_waves":
                     raise ValueError("打印选中波次时必须至少提供一个波次号。")
-            limit = 100 if self.mode == "print_waves" else 500  # 与 config.wave_printing.max_selected_waves 对齐
+            cfg = get_settings().load_automation()
+            limit = (
+                cfg.wave_printing.max_selected_waves
+                if self.mode == "print_waves"
+                else cfg.wave_picking.max_selected_waves
+            )
             if len(normalized) > limit:
                 operation = "打印" if self.mode == "print_waves" else "拣货"
                 raise ValueError(f"一次最多{operation} {limit} 个不同波次。")

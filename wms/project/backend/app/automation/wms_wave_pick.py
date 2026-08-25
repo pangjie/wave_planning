@@ -19,6 +19,7 @@ from app.automation.common import (
     ProgressCallback,
     WAVE_NO_PATTERN,
     first_page,
+    normalize_wave_nos,
     open_browser_context,
     resolve_headless,
 )
@@ -64,7 +65,7 @@ class WmsWavePickAutomation:
         if wave_cfg.max_concurrent_waves != 5:
             raise AutomationError("安全限制异常：波次拣货最大并发必须严格限制为 5。")
 
-        requested_wave_nos = list(dict.fromkeys(wave_nos or []))
+        requested_wave_nos = normalize_wave_nos(wave_nos or [])
         for wave_no in requested_wave_nos:
             if not WAVE_NO_PATTERN.fullmatch(wave_no):
                 raise AutomationError(f"波次号格式异常，已停止操作：{wave_no}")

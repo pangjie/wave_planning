@@ -35,6 +35,7 @@
     "target_url": "https://wms.xlwms.com/outbound/wave",
     "pending_tab_text": "待拣货",
     "max_concurrent_waves": 5,
+    "max_selected_waves": 500,
     "selectors": {
       "pending_tabs": "[role=\"tab\"]",
       "wave_rows": "table.vxe-table--body tbody tr.vxe-body--row",

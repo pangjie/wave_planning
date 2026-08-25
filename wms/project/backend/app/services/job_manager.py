@@ -166,7 +166,12 @@ class JobManager:
         return self.jobs.get(job_id)
 
     def list(self) -> list[JobRecord]:
-        return sorted(self.jobs.values(), key=lambda item: item.created_at, reverse=True)[:50]
+        # 只返回当天任务：与 jobs.json 的当天持久化口径一致（跨天不残留旧任务）
+        return sorted(
+            (job for job in self.jobs.values() if self._same_day(job.created_at)),
+            key=lambda item: item.created_at,
+            reverse=True,
+        )[:50]
 
     async def cancel(self, job_id: str) -> JobRecord | None:
         job = self.jobs.get(job_id)
