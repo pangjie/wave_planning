@@ -2,16 +2,10 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-PNPM_BIN="${PNPM_BIN:-$(command -v pnpm || true)}"
 export PYINSTALLER_CONFIG_DIR="$ROOT_DIR/build/pyinstaller-cache"
 
 if [[ ! -x "$ROOT_DIR/.venv/bin/python" ]]; then
   echo "未找到项目虚拟环境，请先运行 ./scripts/setup.sh。" >&2
-  exit 1
-fi
-
-if [[ -z "$PNPM_BIN" ]]; then
-  echo "未找到 pnpm，无法构建前端。" >&2
   exit 1
 fi
 
@@ -20,8 +14,12 @@ if ! "$ROOT_DIR/.venv/bin/python" -m PyInstaller --version >/dev/null 2>&1; then
   exit 1
 fi
 
-cd "$ROOT_DIR/frontend"
-node node_modules/vite/bin/vite.js build
+# 控制台页面由 planner/build.py 生成并部署到 frontend/dist/index.html；.app 直接打包该产物
+if [[ ! -f "$ROOT_DIR/frontend/dist/index.html" ]]; then
+  echo "未找到控制台页面 frontend/dist/index.html。" >&2
+  echo "请先在 planner/ 中运行 python3 build.py（会自动部署到本目录）。" >&2
+  exit 1
+fi
 
 cd "$ROOT_DIR/desktop"
 "$ROOT_DIR/.venv/bin/python" -m PyInstaller \

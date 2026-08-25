@@ -1,6 +1,6 @@
 # WMS 自动化控制台
 
-一个基于 FastAPI、Playwright 的本地网页自动化控制台（控制台页面由波次规划工具单文件版提供，Vue 源码仅保留不部署），目前包含“导出所有订单”“打印选中波次”和“所有波次拣货”三个生产工作流。
+一个基于 FastAPI、Playwright 的本地网页自动化控制台（控制台页面由波次规划工具单文件版提供），包含“导出所有订单”“生成波次”“打印选中波次”和“所有波次拣货”四个生产工作流。
 
 ## 导出所有订单
 
@@ -17,9 +17,16 @@
 6. 对比导出前后的“任务中心”，识别新出现的 `ParcelOutbound_` 任务；
 7. 等待该任务的下载按钮可用，再将文件保存到本地 `downloads/`。
 
+## 生成波次
+
+- 由波次规划工具控制台按分段提交：每个分段含渠道、分段名与出库单号清单；
+- 后端逐段执行：多项精确搜索 → 核对搜索结果总数（以“共 X 条”为准，页签数字仅在“待处理数 == 共 X 条”后可信，支持部分订单已取消的降级判定；总数疑似残留上一次查询时自动重查一次）→ 全选 → 按勾选数据生成波次 → 提取波次号；
+- 每个分段只允许点击一次“确定”提交生成；某段失败则安全停止该段、恢复页面后继续后续分段，绝不遗漏或错分订单；
+- 已生成波次的分段结果实时回报控制台（分段变绿），并持久化到 `data/wave-records.json` 供页面刷新后回填。
+
 ## 打印选中波次
 
-- 在控制台中每行输入一个波次号；空行和重复波次会自动忽略，一次最多处理 100 个不同波次；
+- 在控制台中每行输入一个波次号；空行和重复波次会自动忽略，一次最多处理 100 个不同波次（`wave_printing.max_selected_waves`）；
 - 在波次管理的“全部”列表中逐页精确查找每个波次，只操作匹配 `rowid` 的右侧操作区；
 - 依次点击唯一的“更多”与“打印汇总拣货单”；若出现“当前波次已打印过拣货单，是否确认打印”，只在提示中的波次号与当前波次完全一致时点击“确定”，其它提示会被取消并停止流程；
 - 进入打印中心后将模板校验为“一件代发汇总拣货单”，等待模板右侧唯一的“打印”按钮可用后再点击；
@@ -50,6 +57,7 @@
 - 自动化只操作 `config/automation.json` 中声明的页面和控件。
 - 任何关键按钮或模板选项不唯一时立即停止，不猜测、不按位置盲点。
 - 打印工作流只接受字母、数字、下划线和连字符组成的波次号，阻止波次号被当作文件路径使用；打印预览必须能唯一定位，PDF 至少通过文件头、最小体积和 `qpdf` 合并检查；单个 PDF 通过临时文件完整生成后再原子替换正式文件。
+- 任务历史（含失败终态）按天持久化到 `data/jobs.json`（原子写入），服务重启后页面可恢复当天任务日志与可下载链接。
 
 ## 控制台体验
 
@@ -63,11 +71,11 @@
 
 ## 控制台页面（波次规划工具）
 
-本服务托管的控制台页面已由「波次规划工具」单文件版接管（`frontend/dist/index.html`），
-原 Vue 控制台源码保留在 `frontend/src/` 但不再构建部署。波次规划工具内置 WMS 联动区：
-「导出订单」「打印波次」「批量拣货」三个工作流直接在规划工具左侧操作栏发起，任务状态与
-日志显示在页面底部面板；导出订单成功后会自动把 `ParcelOutbound_*.xlsx` 导入规划分析。
-以 `file://` 双击打开同一 HTML 时联动区自动隐藏，仅保留离线规划功能。
+本服务托管的控制台页面已由「波次规划工具」单文件版接管（`frontend/dist/index.html`）。
+波次规划工具内置 WMS 联动区：「导出订单」「生成波次」「打印波次」「批量拣货」四个
+工作流直接在规划工具左侧操作栏发起，任务状态与日志显示在页面底部面板；导出订单成功
+后会自动把 `ParcelOutbound_*.xlsx` 导入规划分析。以 `file://` 双击打开同一 HTML 时
+联动区自动隐藏，仅保留离线规划功能。
 
 页面部署方式：在规划工具工程目录 `planner/` 运行 `python3 build.py`，会自动把页面
 同步写入本项目的 `frontend/dist/index.html`。
@@ -98,6 +106,9 @@ Python 依赖与 Playwright 驱动，仍调用本机已安装的 Google Chrome �
 open "dist/WMS自动化控制台.app"
 ```
 
+构建脚本会直接打包 `frontend/dist/index.html`（即波次规划工具控制台页面），构建前请先
+在 `planner/` 运行 `python3 build.py` 完成页面部署。
+
 应用会在后台监听 `http://127.0.0.1:8000` 并自动打开默认浏览器。再次双击会复用现有
 服务。运行数据位于 `~/Library/Application Support/WMS自动化控制台/`，服务日志位于
 `~/Library/Logs/WMS自动化控制台/service.log`，最终文件仍写入 `~/Downloads/`。
@@ -116,24 +127,22 @@ Codex 内置浏览器的登录状态由 Codex 管理，不能安全地直接复�
 ```text
 backend/app/
   api/routes.py              # HTTP 接口与生产确认校验
-  automation/common.py       # 浏览器会话与公共自动化类型
+  automation/common.py       # 浏览器会话与公共自动化辅助（加载等待/输入轮询/波次号清洗）
   automation/wms_export.py   # 订单导出主流程
   automation/export_task_center.py # 任务中心识别、下载与复制
+  automation/wms_wave_generate.py  # 生成波次：搜索核对、全选、按勾选数据生成
   automation/wms_wave_pick.py # 波次并发、提交和最终统一对账
+  automation/wave_pending.py # 待拣货列表分页、定位和全量读取
   automation/pdf_centering.py  # 按 PDF 实际绘制对象逐页执行最终居中校正
   automation/wms_wave_print.py # 选中波次打印、单文件保存与 qpdf 合并
-  automation/wave_pending.py # 待拣货列表分页、定位和全量读取
   core/config.py             # 路径、环境变量、JSON 配置
-  services/job_manager.py    # 任务队列、状态、取消与并发保护
-frontend/src/
-  App.vue                    # 旧 Vue 控制台源码（保留，不部署）
+  services/job_manager.py    # 任务队列、状态、取消、并发保护与当天持久化
+  services/wave_records.py   # 分段波次号持久记录（data/wave-records.json）
 config/automation.json       # URL、模板、选择器、超时集中配置
-tests/                       # API、配置、任务状态测试
+tests/                       # API、配置、任务状态与各工作流测试
 ```
 
-完整目录职责、调用树与任务状态见 `PROJECT_STRUCTURE.txt`；供其他 AI 或开发者接手时，
-请先阅读 `AI_HANDOFF.md`，其中包含当前行为不变量、API 合约、部署模型、已知限制、
-故障定位和安全操作准则。
+完整的架构说明与调用关系见仓库根目录的 `代码架构说明.md`。
 
 页面结构变化时，通常只需调整 `config/automation.json`。增加新自动化任务时，可在 `backend/app/automation/` 新建工作流，并在任务服务/API 中注册，现有任务状态模型可继续复用。
 
@@ -143,24 +152,27 @@ tests/                       # API、配置、任务状态测试
 
 - `WMS_BROWSER_PROFILE`：浏览器会话目录；
 - `WMS_DOWNLOADS_DIR`：浏览器下载目录；
-- `WMS_SECONDARY_DOWNLOADS_DIR`：另存副本目录（历史兼容，已停用），默认为 `~/Downloads`；
 - `WMS_HEADLESS=true`：无头运行（仅建议已稳定登录后使用）；
 - `WMS_BROWSER_CHANNEL=chrome`：浏览器通道，默认使用本机 Chrome；设为空字符串时使用 Playwright Chromium；
-- `WMS_AUTOMATION_CONFIG`：自定义自动化 JSON 路径。
+- `WMS_AUTOMATION_CONFIG`：自定义自动化 JSON 路径；
+- `WMS_OUTPUTS_DIR`：波次 PDF 与波次规划导出目录。
 
 ## API
 
-- `POST /api/jobs`：创建正式导出任务，正文为 `{"mode":"export","confirm_production":true}`；
-- `POST /api/jobs`：创建选中波次打印任务，正文为 `{"mode":"print_waves","wave_nos":["W001","W002"],"confirm_production":true}`；
-- `POST /api/jobs`：创建波次拣货任务；`wave_nos` 可选，省略或传空数组时处理全部待拣货波次，示例 `{"mode":"pick_waves","wave_nos":["W001","W002"],"confirm_production":true}`；
+- `POST /api/jobs`：创建任务，`mode` 取 `export` / `generate_waves` / `print_waves` / `pick_waves`，均需 `confirm_production: true`；`generate_waves` 需附 `segments`（渠道/分段名/出库单号清单）；
+- `GET /api/jobs`：当天任务列表（最新在前）；
 - `GET /api/jobs/{id}`：查询任务状态与事件；
 - `POST /api/jobs/{id}/cancel`：取消任务；
 - `GET /api/jobs/{id}/file`：下载导出任务的 `ParcelOutbound_*.xlsx`（仅限项目下载目录内文件，供规划工具自动导入）；
+- `GET /api/jobs/{id}/merged`：下载打印任务合并后的 `Paper合并_*.pdf`；
+- `GET /api/exports` / `POST /api/exports` / `GET /api/exports/{name}`：当天波次规划导出文件的清单、保存与下载；
+- `GET /api/wave-records` / `POST /api/wave-records/clear`：分段波次记录的读取与清空；
 - `GET /docs`：FastAPI 交互文档。
 
 ## 测试
 
 ```bash
-PYTHONPATH=backend .venv/bin/pytest
-cd frontend && pnpm build
+PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend .venv/bin/python -m pytest -p no:cacheprovider -q
 ```
+
+规划工具前端测试（Node + Chrome，`test-wms-ui` 需要 8000 端口空闲）见仓库根目录 `README.md`。

@@ -33,7 +33,6 @@
         ├── config/          # WMS 页面配置
         ├── scripts/         # 安装/启动/测试脚本
         ├── tests/           # 后端 pytest 测试
-        ├── AI_HANDOFF.md    # 后端交接文档
         ├── data/            # 登录会话、波次记录
         ├── downloads/       # WMS 下载文件
         ├── outputs/         # Excel/PDF 产物
@@ -168,7 +167,7 @@ node test-core.js && node test-consistency.js
 node test-e2e.js && node test-web-chain.js && node test-invariants.js
 node test-wms-ui.js
 
-# WMS 后端（pytest，66 项，不连接生产 WMS）
+# WMS 后端（pytest，76 项，不连接生产 WMS）
 cd ../wms/project
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend .venv/bin/python -m pytest -p no:cacheprovider
 ```
@@ -181,7 +180,7 @@ PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=backend .venv/bin/python -m pytest -p no:ca
 
 - `target_url` / `template_name`：导出工作流的订单页地址与模板校验；
 - `wave_picking` / `wave_printing`：拣货与打印工作流的页面选择器、并发数、超时；
-- `wave_generation`：生成波次工作流——搜索栏选择器、每页条数、多项搜索单次上限（700 行）、波次号格式、超时；`manual_step_mode`（人工逐步确认，默认关闭）、`observe_pause_ms`（观察暂停，默认 0）。
+- `wave_generation`：生成波次工作流——搜索栏选择器、每页条数、多项搜索单次上限（700 行）、波次号格式、超时；`search_verify_wait_ms`（搜索数量核对短窗等待，默认 4000ms）。
 
 ### 环境变量（均可选，默认值见 `backend/app/core/config.py`）
 
