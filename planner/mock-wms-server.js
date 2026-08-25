@@ -10,6 +10,7 @@ function createMockServer({ samplePath, htmlSource, site = 'http://127.0.0.1:800
   const jobs = new Map();
   const requests = [];
   const exports = new Map();  // 文件名 -> 字节
+  let failSegment = null;    // 测试注入：{channel, seg_name} 命中即该分段生成失败
 
   function now() { return new Date().toISOString(); }
   function mkJob(mode, browserMode, waveNos) {
@@ -55,6 +56,13 @@ function createMockServer({ samplePath, htmlSource, site = 'http://127.0.0.1:800
       /* 测试控制面 */
       if (p === '/api/__test/requests') return json(res, 200, requests);
       if (p === '/api/__test/clear') { requests.length = 0; return json(res, 200, { ok: true }); }
+      if (p === '/api/__test/fail-segment' && req.method === 'POST') {
+        const body = await readBody(req);
+        failSegment = (body && body.channel && body.seg_name)
+          ? { channel: String(body.channel), seg_name: String(body.seg_name) }
+          : null;
+        return json(res, 200, { ok: true });
+      }
 
       if (p === '/api/health') return json(res, 200, { status: 'ok' });
 
@@ -144,33 +152,48 @@ function createMockServer({ samplePath, htmlSource, site = 'http://127.0.0.1:800
             }, 800);
           }, 200);
         } else if (body.mode === 'generate_waves') {
-          const segs = (body.segments || []).map((sg, i) => ({
-            channel: sg.channel, seg_name: sg.seg_name,
-            order_count: (sg.order_nos || []).length,
-            wave_no: 'W' + String(2026081700001 + i).padStart(13, '0')
-          }));
+          const segs = (body.segments || []).map((sg, i) => {
+            const fail = failSegment
+              && sg.seg_name === failSegment.seg_name
+              && sg.channel === failSegment.channel;
+            return {
+              channel: sg.channel, seg_name: sg.seg_name,
+              order_count: (sg.order_nos || []).length,
+              wave_no: fail ? null : 'W' + String(2026081700001 + i).padStart(13, '0'),
+              note: fail ? '搜索结果总数与目标不一致（模拟数量核对失败），已停止。' : null
+            };
+          });
           setTimeout(() => {
             pushEvent(job, 'searching', `将为 ${segs.length} 个分段生成波次（模拟）。`);
-            /* 逐段上报波次号：模拟“生成一个记录一个变绿一个” */
+            /* 逐段上报波次号：模拟“生成一个记录一个变绿一个”；失败段上报 segment_failed */
             segs.forEach((sg, i) => {
               setTimeout(() => {
                 if (job.status !== 'running') return;
-                pushEvent(job, 'segment_wave', JSON.stringify({
-                  channel: sg.channel, seg_name: sg.seg_name, wave_no: sg.wave_no
-                }));
+                if (sg.wave_no) {
+                  pushEvent(job, 'segment_wave', JSON.stringify({
+                    channel: sg.channel, seg_name: sg.seg_name, wave_no: sg.wave_no
+                  }));
+                } else {
+                  pushEvent(job, 'segment_failed', `分段 ${sg.channel} ${sg.seg_name} 失败：${sg.note}不重试该分段，恢复页面后继续下一分段。`);
+                }
               }, 400 + i * 250);
             });
             setTimeout(() => {
               if (job.status !== 'running') return;
-              job.status = 'succeeded';
+              const failed = segs.filter(s => !s.wave_no).length;
+              job.status = failed ? 'partial' : 'succeeded';
               job.updated_at = now();
               job.result = {
                 mode: 'generate_waves',
-                message: `生成波次完成：${segs.length}/${segs.length} 个分段成功。`,
-                segments: segs, generated_count: segs.length, failed_count: 0,
+                message: `生成波次完成：${segs.length - failed}/${segs.length} 个分段成功。`,
+                segments: segs, generated_count: segs.length - failed, failed_count: failed,
                 completed_at: now()
               };
-              job.events.push({ stage: 'completed', message: `生成波次完成：${segs.length} 个分段成功。`, at: now() });
+              job.events.push({
+                stage: failed ? 'completed_with_warnings' : 'completed',
+                message: `生成波次完成：${segs.length - failed}/${segs.length} 个分段成功。`,
+                at: now()
+              });
             }, 400 + segs.length * 250 + 250);
           }, 200);
         } else { /* pick_waves：保持运行，供取消流程测试 */

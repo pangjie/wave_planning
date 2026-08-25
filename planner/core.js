@@ -1,5 +1,5 @@
 /* =============================================================
- * 波次规划工具 · 核心逻辑（纯 JS，不依赖 DOM，仅依赖 XLSX 全局）
+ * 波次规划工具 · 核心逻辑（纯计算不依赖 DOM；导出下载函数例外，仅依赖 XLSX 全局）
  * ============================================================= */
 'use strict';
 
@@ -1300,14 +1300,14 @@ function downloadWorkbook(exportData) {
 /* ---------- Node 测试钩子 ---------- */
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
-    normHeader: normHeader, text: text, parseQty: parseQty,
-    locateSheet: locateSheet, mapHeaders: mapHeaders, buildRecords: buildRecords,
-    trackingChannel: trackingChannel,
-    linearPartition: linearPartition, partitionByCapacity: partitionByCapacity,
-    buildComponents: buildComponents, discreteAllocate: discreteAllocate,
-    analyzeChannel: analyzeChannel, analyze: analyze,
-    buildExport: buildExport, buildXlsxBuffer: buildXlsxBuffer, downloadWorkbook: downloadWorkbook,
-    REQUIRED_COLS: REQUIRED_COLS, DEFAULT_UNIFIED: DEFAULT_UNIFIED,
-    sheetClassSeq: sheetClassSeq
+    parseQty: parseQty, locateSheet: locateSheet, mapHeaders: mapHeaders,
+    buildRecords: buildRecords, trackingChannel: trackingChannel,
+    linearPartition: linearPartition, analyzeChannel: analyzeChannel,
+    analyze: analyze, buildExport: buildExport, buildXlsxBuffer: buildXlsxBuffer,
+    DEFAULT_UNIFIED: DEFAULT_UNIFIED,
+    /* 测试与界面共用的展示映射（避免多份拷贝） */
+    ABSORB_NAMES: ABSORB_NAMES, TYPE_LABEL: TYPE_LABEL,
+    KIND_SHORT: KIND_SHORT, KIND_TYPE: KIND_TYPE,
+    segDisplayName: segDisplayName
   };
 }

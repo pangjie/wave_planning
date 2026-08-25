@@ -89,14 +89,7 @@ const chrome = T.launchChrome({ port: PORT, userDataDir: USER_DIR });
   console.log('✔ 空状态：表格骨架，渠道模式切换，统一调整居中，最大宽 1160px；顶栏已移除');
 
   /* 2. 导入 */
-  const b64 = fs.readFileSync(SAMPLE).toString('base64');
-  await evalJs(`(function(){
-    var bin = atob('${b64}');
-    var bytes = new Uint8Array(bin.length);
-    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    window.__dshTest.handleFile(new File([bytes], 'sample.xlsx'));
-    return 'ok';
-  })()`);
+  await evalJs(T.importFileExpr(SAMPLE));
   await poll(`window.__dshTest.state.records.length`, 5700);
   assert(await evalJs(`document.getElementById('status').textContent`) === '', '导入订单后不应显示动作说明');
   assert(await evalJs(`document.querySelectorAll('#dash .prow').length`) === 12, '渠道行应为 12（含空渠道）');

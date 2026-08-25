@@ -39,14 +39,7 @@ const chrome = T.launchChrome({ port: PORT, userDataDir: USER_DIR });
   await poll(`document.querySelectorAll('#dash .prow').length`, 12);
 
   /* 1. 导入 */
-  const b64 = fs.readFileSync(SAMPLE).toString('base64');
-  await evalJs(`(function(){
-    var bin = atob('${b64}');
-    var bytes = new Uint8Array(bin.length);
-    for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    window.__dshTest.handleFile(new File([bytes], 'sample.xlsx'));
-    return 'ok';
-  })()`);
+  await evalJs(T.importFileExpr(SAMPLE));
   await poll(`window.__dshTest.state.records.length`, 5700);
   console.log('✔ 导入 5700 单');
 

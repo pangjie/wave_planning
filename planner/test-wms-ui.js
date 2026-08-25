@@ -219,6 +219,43 @@ T.withChrome(T.launchChrome({ port: PORT, userDataDir: USER_DIR }), async () => 
   console.log('✔ 刷新恢复：当天日志与可下载链接完整重建（' + restoredLinks + ' 个链接）');
   console.log('✔ 生成波次：按导出顺序提交 ' + gen.segments.length + ' 个分段，全部变绿，自动导出（恰好 1 条下载链接）');
 
+  /* 2.55 含失败分段：失败段不建波次（不变绿）、其余继续、整体 partial、自动导出仍执行一次 */
+  const failTarget = gen.segments[1];  // 取第 2 个分段作为数量核对失败对象
+  await evalJs(T.importFileExpr(SAMPLE));  // 重新导入：清空既往波次状态，从干净状态开始
+  await poll(`window.__dshTest.state.records.length`, 5700, 100, 200);
+  await sleep(600);  // 等清理请求落库
+  await fetch('http://127.0.0.1:8000/api/__test/fail-segment', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ channel: failTarget.channel, seg_name: failTarget.seg_name })
+  });
+  await evalJs(`(function(){
+    var w = window.__dshTest.wms;
+    w.job = null;
+    if (w.mode !== 'generate_waves') document.getElementById('wmsGenerate').click();
+    document.getElementById('wmsRun').click();
+    return 1;
+  })()`);
+  await poll(`(function(){var w=window.__dshTest.wms;return w.job && w.job.mode==='generate_waves' ? w.job.status : '';})()`, 'partial', 100, 300);
+  await poll(`document.querySelector('#wmsLog a[href*="/api/exports/"]') ? true : false`, true, 100, 100);
+  const partInfo = JSON.parse(await evalJs(`(function(){
+    var seg = document.querySelector('.seg-line[data-seg="${failTarget.channel}|${failTarget.seg_name}"]');
+    var logText = document.getElementById('wmsLog').textContent;
+    return JSON.stringify({
+      waved: window.__dshTest.state.waveNos.size,
+      failedWaved: !!(seg && seg.classList.contains('waved')),
+      failedLogged: logText.indexOf('segment_failed') >= 0 && logText.indexOf('${failTarget.seg_name}') >= 0,
+      linkCount: document.querySelectorAll('#wmsLog a[href*="/api/exports/"]').length
+    });
+  })()`));
+  assert(partInfo.failedWaved === false, '失败分段不应变绿: ' + JSON.stringify(partInfo));
+  assert(partInfo.waved > 0 && partInfo.failedLogged === true, '其余分段应继续生成且日志含失败记录: ' + JSON.stringify(partInfo));
+  assert(partInfo.linkCount === 1, 'partial 完成后也应自动导出一次: ' + JSON.stringify(partInfo));
+  await fetch('http://127.0.0.1:8000/api/__test/fail-segment', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ channel: null, seg_name: null })
+  });
+  console.log('✔ 分段失败安全停止：失败段不变绿、其余继续、整体 partial、自动导出仍执行');
+
   /* 2.6 重新导入订单文件：既往波次历史应被清理（本地变绿清零 + 后端记录清空） */
   await evalJs(T.importFileExpr(SAMPLE));
   await poll(`window.__dshTest.state.records.length`, 5700, 100, 200);

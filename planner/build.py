@@ -3,7 +3,6 @@
 # 输出：本工程顶层的 波次规划工具.html，
 #       并同步部署到 ../wms/project/frontend/dist/index.html（本地服务控制台页面）
 import os
-import re
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(BASE)
@@ -16,9 +15,6 @@ core = open(os.path.join(BASE, "core.js"), encoding="utf-8").read()
 app = open(os.path.join(BASE, "app.js"), encoding="utf-8").read()
 vendor = open(os.path.join(BASE, "vendor", "xlsx.full.min.js"), encoding="utf-8").read()
 fonts = open(os.path.join(BASE, "part2-fonts.html"), encoding="utf-8").read()
-
-# 防御性处理：vendor 中不应出现 </script（已验证为 0），如有则转义
-vendor = re.sub(r"</(script)", r"<\\/\1", vendor, flags=re.IGNORECASE)
 
 html = (
     head.replace("</head>", fonts + "</head>", 1)

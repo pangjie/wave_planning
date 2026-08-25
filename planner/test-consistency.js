@@ -18,8 +18,12 @@ function check(cond, msg) {
   if (!cond) { failures++; console.error('  ✘ ' + msg); }
 }
 function num(v) { return parseInt(String(v).replace(/[^\d]/g, ''), 10); }
-function normName(n) { return String(n).replace(/-\d+$/, '').replace(/\d+$/, ''); }
-const ABSORB_LABELS = { 1: '关闭', 2: '吸收多件', 3: '全量吸收多件', 4: '全量吸收非爆品' };
+/* 以下映射直接复用 core 的唯一定义，避免测试内复制导致口径漂移 */
+const normName = C.segDisplayName;
+const ABSORB_LABELS = C.ABSORB_NAMES;
+const TLABEL = C.TYPE_LABEL;
+const SHORT = C.KIND_SHORT;
+const FTYPE = C.KIND_TYPE;
 
 /* ---------- 主校验器：给定分析与选择，逐表核对 ---------- */
 function verifyExport(a, selection, label) {
@@ -141,8 +145,6 @@ function verifyExport(a, selection, label) {
     cur.n++;
   });
   check(seps === blocks.length - 1, `${label} 波次表分隔行 ${seps} ≠ 渠道块-1 ${blocks.length - 1}`);
-  const SHORT = { hot: '爆品', paper: '单件', multi: '多件', mix: '混件' };
-  const FTYPE = { hot: '单件', paper: '单件paper', multi: '多件', mix: '混件paper' };
   expSegs.forEach((x, i) => {
     if (i >= waves.length) return;
     const w = waves[i];
@@ -183,7 +185,6 @@ function verifyExport(a, selection, label) {
     check(v('非爆品订单数') === ch.paperOrderCount, `${label} 渠道统计 ${ch.id} 非爆品订单数`);
   });
   /* 分段统计行 */
-  const TLABEL = { hot: '爆品', paper: '单件paper', multi: '多件', mix: '混件' };
   Object.keys(TLABEL).forEach(t => {
     const hasAny = selChans.some(ch => ch.byType[t].some(s => selection.segSelected.has(ch.id + '|' + s.name)));
     const row = segRowOf(TLABEL[t]);

@@ -31,7 +31,6 @@
     };
   }
   var state = {
-    fileName: '',
     waveNos: new Map(),  // 分段键(chId|segName) -> 波次号（生成波次后回填）
     records: [],
     qtyMap: {},
@@ -138,7 +137,6 @@
   function clearData() {
     var keepN = state.modes.normal.unified;
     var keepM = state.modes.merged.unified;
-    state.fileName = '';
     state.waveNos = new Map();
     state.records = [];
     state.qtyMap = {};
@@ -169,7 +167,6 @@
         var br = buildRecords(loc.rows.slice(1), hm);
         if (!br.records.length) throw new Error('「出库单」工作表中没有有效订单数据');
         clearData();
-        state.fileName = file.name;
         state.records = br.records;
         state.qtyMap = br.qtyMap;
         var a = getAnalysis(modeKey());
@@ -726,7 +723,7 @@
     var out = $('out');
     var g = Math.max(0, out.offsetWidth - out.clientWidth);
     document.documentElement.style.setProperty('--gutter', g + 'px');
-    /* 页面最大宽度 = 表格容器宽 966 + 操作栏 200 + 左右留白 28 + 滚动条槽位 + 2px 余量，
+    /* 页面最大宽度 = 表格容器宽 920 + 操作栏 200 + 左右留白 28 + 滚动条槽位 + 2px 余量，
        确保任何平台的滚动条宽度下表格容器都不会被挤窄而产生横向滚动条 */
     document.documentElement.style.setProperty('--shellmax', (920 + 200 + 28 + g + 2) + 'px');
   }
@@ -756,11 +753,9 @@
     /* 历史不跨批次保留：清空本地波次号，并请求后端清空记录 */
     state.waveNos = new Map();
     wms.clearPending = true;
-    try {
-      fetch('/api/wave-records/clear', { method: 'POST' })
-        .then(function (r) { if (r.ok) wms.clearPending = false; })
-        .catch(function () { });
-    } catch (e) { }
+    fetch('/api/wave-records/clear', { method: 'POST' })
+      .then(function (r) { if (r.ok) wms.clearPending = false; })
+      .catch(function () { });
   }
   function wmsRenderModeSel() {
     var btns = document.querySelectorAll('.side-wms .wms-mode');
@@ -1002,7 +997,7 @@
       if (!resp.ok) {
         var detail = '';
         try { detail = JSON.parse(await resp.text()).detail || ''; } catch (e) { }
-        status('提交失败：' + detail, 'err');
+        status('提交失败：' + (detail || '未知错误（HTTP ' + resp.status + '）'), 'err');
         return;
       }
       var job = await resp.json();
@@ -1063,13 +1058,18 @@
   async function wmsApplyWaveNos(job) {
     var outcomes = (job.result && job.result.segments) || [];
     var anyWave = false;
+    var changed = false;
     outcomes.forEach(function (o) {
       if (o.wave_no) {
-        state.waveNos.set(o.channel + '|' + o.seg_name, o.wave_no);
         anyWave = true;
+        var key = o.channel + '|' + o.seg_name;
+        if (state.waveNos.get(key) !== o.wave_no) {
+          state.waveNos.set(key, o.wave_no);
+          changed = true;
+        }
       }
     });
-    if (anyWave) {
+    if (changed) {
       /* 就地刷新分段行（含变绿），并重算汇总；UI 异常不阻断导出 */
       try {
         outcomes.forEach(function (o) {
@@ -1208,7 +1208,6 @@
     wmsSubmit: wmsSubmit,
     wmsSyncWaveRecords: wmsSyncWaveRecords,
     wmsPollOnce: wmsPollOnce,
-    wmsRenderExportLinks: wmsRenderExportLinks,
     wmsRestore: wmsRestore,
     curAnalysis: curAnalysis,
     getAnalysis: getAnalysis,
