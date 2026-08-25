@@ -132,6 +132,18 @@ async def test_pending_snapshot_combines_and_deduplicates_pages() -> None:
 
 
 @pytest.mark.asyncio
+async def test_read_waves_callable_via_instance() -> None:
+    """回归：_read_waves 为 @staticmethod，必须支持 self._read_waves(rows) 的实例调用。"""
+    catalog = make_automation().pending_waves
+    rows = MagicMock()
+    rows.evaluate_all = AsyncMock(return_value=["R1", "R2", "", "R2", "R3"])
+
+    waves = await catalog._read_waves(rows)  # 实例调用；丢失 @staticmethod 会抛 TypeError
+
+    assert [w.wave_no for w in waves] == ["R1", "R2", "R3"]
+
+
+@pytest.mark.asyncio
 async def test_final_check_compares_the_complete_initial_snapshot() -> None:
     catalog = make_automation().pending_waves
     initial = [PendingWave("W001"), PendingWave("W002"), PendingWave("W003")]

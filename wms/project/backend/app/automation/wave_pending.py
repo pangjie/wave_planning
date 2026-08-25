@@ -264,6 +264,7 @@ class PendingWaveCatalog:
             await asyncio.sleep(0.1)
         raise AutomationError("待拣货分页切换超时，已停止操作。")
 
+    @staticmethod
     async def _read_waves(rows: Locator) -> list[PendingWave]:
         raw = await rows.evaluate_all(
             r"""
