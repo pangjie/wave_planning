@@ -1,0 +1,62 @@
+<body data-theme="dracula">
+<div class="shell">
+  <div class="bodywrap">
+    <aside class="side">
+      <div class="side-row side-btns">
+        <button class="bb" id="btnImport" title="导入订单 Excel">导入</button>
+        <button class="bb" id="btnExport" title="导出 Excel" disabled>导出</button>
+        <span class="cfg-wrap">
+          <button class="bb" id="themeBtn" title="选择界面主题">主题</button>
+          <ul class="cfg-list" id="themeList" hidden>
+            <li data-v="dracula" class="on">光耀紫府</li>
+            <li data-v="yellow">黄天当立</li>
+            <li data-v="jade">蟠青丛翠</li>
+            <li data-v="reddust">万丈红尘</li>
+            <li data-v="seaclear">海晏河清</li>
+          </ul>
+        </span>
+      </div>
+      <div class="side-row side-mode">
+        <span class="dim">渠道模式</span>
+        <span id="modeLabel" class="mode-toggle" title="点击切换渠道模式（拆分 / 归并）">拆分</span>
+      </div>
+      <div class="side-row side-browser">
+        <span class="dim">浏览器模式</span>
+        <span id="browserModeVal" class="mode-toggle" title="点击在有头 / 无头之间切换（有头=弹出浏览器可见操作）">无头</span>
+      </div>
+      <div class="side-row side-wms" id="wmsSection" style="display:none">
+        <div class="side-wms-head">
+          <span class="dim">WMS 联动</span>
+          <span class="wms-dot" id="wmsDot" title="本地服务状态"></span>
+        </div>
+        <button class="bb wms-mode" id="wmsExport" data-mode="export" title="选中后点击下方「开始任务」：在 WMS 中提交一次正式订单导出并自动导入全量订单分析">全量分析</button>
+        <button class="bb wms-mode" id="wmsGenerate" data-mode="generate_waves" title="选中后点击下方「开始任务」：按网页勾选的分段顺序逐段生成波次并回填波次号">生成波次</button>
+        <button class="bb wms-mode" id="wmsPrint" data-mode="print_waves" title="选中后点击下方「开始任务」：按下方波次号生成拣货单 PDF 并合并">打印波次</button>
+        <button class="bb wms-mode" id="wmsPick" data-mode="pick_waves" title="选中后点击下方「开始任务」：批量拣货，下方留空=全部待拣货波次，或每行一个波次号">批量拣货</button>
+        <textarea id="wmsWaves" rows="4" spellcheck="false" placeholder="波次号每行一个&#10;拣货留空=全部待拣货"></textarea>
+        <button class="bb run" id="wmsRun" disabled title="选中上方任一功能后点击开始；任务运行中点击可终止">开始任务</button>
+        <div class="wms-log" id="wmsLog"></div>
+      </div>
+      <div class="side-spacer"></div>
+      <div class="side-row side-status">
+        <span class="status" id="status"></span>
+        <span id="engineLabelWrap"><span class="dim">引擎</span><span id="engineLabel" class="fail">检测中</span></span>
+      </div>
+    </aside>
+    <main class="term">
+      <div class="out" id="out">
+        <div id="dash"></div>
+      </div>
+      <div class="wms-panel" id="wmsPanel" hidden>
+        <div class="wms-panel-bar">
+          <span class="wms-state" id="wmsState">空闲</span>
+          <span class="wms-msg" id="wmsMsg"></span>
+          <span class="spacer"></span>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+<input type="file" id="fileInput" accept=".xlsx,.xls,.xlsm" hidden>
+</body>
+</html>

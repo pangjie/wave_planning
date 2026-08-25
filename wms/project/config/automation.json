@@ -1,0 +1,123 @@
+{
+  "target_url": "https://wms.xlwms.com/outbound/parcel",
+  "template_name": "渠道拆分",
+  "required_template_fields": [
+    "订单品种类型",
+    "物流承运商"
+  ],
+  "minimum_template_fields": 11,
+  "selectors": {
+    "page_export_button": "button:visible:has-text(\"导出\")",
+    "loading_mask": ".el-loading-mask:visible",
+    "export_dialog": "div[role=\"dialog\"][aria-label=\"导出\"]",
+    "template_input": "input.el-input__inner[readonly]",
+    "template_dropdown": ".el-select-dropdown.template-select-popover:visible",
+    "template_option": ".el-select-dropdown.template-select-popover:visible .el-select-dropdown__item",
+    "final_export_button": "button.el-button--primary:has-text(\"导出\")",
+    "toast": ".el-message:visible",
+    "task_center_trigger": "i.xl_tab_download.user-operation-icon.el-popover__reference",
+    "task_center_popover": ".task-popover:visible",
+    "task_center_item": ".task-popover:visible .task-item",
+    "task_center_download_button": "button:has-text(\"下载\")"
+  },
+  "task_filename_prefix": "ParcelOutbound_",
+  "timeouts_ms": {
+    "navigation": 60000,
+    "login": 300000,
+    "dialog": 15000,
+    "action": 15000,
+    "result": 12000,
+    "task_completion": 600000,
+    "task_poll_interval": 2000,
+    "download": 120000
+  },
+  "wave_picking": {
+    "target_url": "https://wms.xlwms.com/outbound/wave",
+    "pending_tab_text": "待拣货",
+    "max_concurrent_waves": 5,
+    "selectors": {
+      "pending_tabs": "[role=\"tab\"]",
+      "wave_rows": "table.vxe-table--body tbody tr.vxe-body--row",
+      "wave_pick_button": "button.out-btn",
+      "picking_headers": "table.vxe-table--header",
+      "select_all_checkbox": "span.vxe-cell--checkbox[title=\"全选/取消\"]:visible",
+      "picking_rows": "table.vxe-table--body tbody tr.vxe-body--row",
+      "confirm_buttons": "button:visible",
+      "cutoff_dialog": ".el-message-box__wrapper:visible, div[role=\"dialog\"]:visible",
+      "cutoff_confirm_buttons": "button:visible",
+      "result_messages": ".el-message:visible, .el-notification:visible",
+      "loading_mask": ".el-loading-mask:visible",
+      "pager_next_button": ".el-pagination:visible button.btn-next",
+      "pager_active_page": ".el-pagination:visible .el-pager li.number.active"
+    },
+    "timeouts_ms": {
+      "navigation": 60000,
+      "login": 300000,
+      "action": 15000,
+      "picking_page": 60000,
+      "completion": 180000
+    }
+  },
+  "wave_printing": {
+    "wave_tab_text": "全部",
+    "template_name": "一件代发汇总拣货单",
+    "max_selected_waves": 100,
+    "pdf_format": "Letter",
+    "selectors": {
+      "more_button": "button:visible",
+      "print_summary_item": "li.ak-dropdown-item:visible",
+      "reprint_dialog": ".el-message-box__wrapper:visible, div[role=\"dialog\"]:visible",
+      "reprint_confirm_buttons": "button:visible",
+      "print_template_container": ".el-form-item:has-text(\"打印模板\")",
+      "print_template_input": "input.el-input__inner[readonly]",
+      "template_dropdown": ".el-select-dropdown:visible",
+      "template_option": ".el-select-dropdown__item:visible",
+      "print_button": "button:visible",
+      "loading_mask": ".el-loading-mask:visible"
+    },
+    "timeouts_ms": {
+      "action": 15000,
+      "print_center": 30000,
+      "render": 30000
+    }
+  },
+  "wave_generation": {
+    "target_url": "https://wms.xlwms.com/outbound/parcel",
+    "pending_tab_text": "待处理",
+    "page_size_option": "1000条/页",
+    "multi_search_max_lines": 700,
+    "wave_no_pattern": "W[0-9]{13}",
+    "selectors": {
+      "search_input": "input.el-input__inner",
+      "advanced_filter_icon": ".advanced-input-icon.lx_combo_filter",
+      "multi_search_textarea": ".el-popover.popover-advanced-input textarea",
+      "multi_search_button": ".el-popover.popover-advanced-input button:has-text(\"搜索\")",
+      "select_all_checkbox": "span.vxe-cell--checkbox[title=\"全选/取消\"]",
+      "generate_wave_button": "button:has-text(\"生成波次\")",
+      "generate_by_selection_item": ".ak-button-group-popover li.ak-dropdown-item:has-text(\"按勾选数据\")",
+      "wave_dialog": ".el-dialog, .vxe-modal--wrapper",
+      "sort_rule_add_button": "button:has-text(\"添加规则\")",
+      "wave_confirm_button": ".el-dialog:visible button:has-text(\"确定\"), .vxe-modal--wrapper:visible button:has-text(\"确定\")",
+      "result_text": ".el-dialog:visible, .vxe-modal--wrapper:visible, .el-message-box:visible",
+      "loading_mask": ".el-loading-mask",
+      "outbound_search_component": ".ak-advanced-input__multi:has(span.fake-select-label:text-is(\"出库单号\"))",
+      "sort_rule_rows": ".sort-rule-selector .rule-row",
+      "sort_rule_label": ".rule-select .fake-select-label",
+      "sort_rule_add_btn": ".sort-rule-selector .add-btn",
+      "sort_rule_select": ".rule-select",
+      "pagination_total": ".el-pagination__total"
+    },
+    "timeouts_ms": {
+      "navigation": 60000,
+      "login": 300000,
+      "action": 15000,
+      "search_result": 30000,
+      "dialog": 15000,
+      "wave_generation": 180000
+    },
+    "observe_pause_ms": 0,
+    "search_verify_wait_ms": 4000,
+    "manual_step_mode": false,
+    "step_control_file": "step-control.json"
+  }
+}

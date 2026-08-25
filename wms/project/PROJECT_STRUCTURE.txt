@@ -1,0 +1,235 @@
+WMS 自动化控制台：项目与代码结构说明
+======================================
+
+说明
+----
+1. 本文件只描述项目结构和调用关系，不包含账号、Cookie 或生产数据。
+2. “源代码”是需要维护的文件；“运行数据”由程序生成，不应当当作源码修改。
+3. 后端依赖方向固定为：API -> 服务 -> 自动化编排 -> 页面组件/共享基础设施。
+   下层模块不得反向导入 API 或服务层，避免循环依赖。
+
+
+一、项目目录树
+--------------
+
+project/
+├── backend/                              # Python/FastAPI 后端
+│   ├── requirements.txt                  # 后端运行与测试依赖版本
+│   └── app/
+│       ├── __init__.py                   # Python 包标识
+│       ├── main.py                       # 应用组装入口：加载配置、创建服务、挂载 API/前端静态文件
+│       ├── api/
+│       │   ├── __init__.py
+│       │   └── routes.py                 # HTTP 接口：健康检查、配置、创建/查询/取消任务
+│       ├── core/
+│       │   ├── __init__.py
+│       │   └── config.py                 # Pydantic 配置模型、环境变量、automation.json 加载
+│       ├── services/
+│       │   ├── __init__.py
+│       │   └── job_manager.py            # 内存任务队列、状态、日志、取消、重复任务拦截与并发锁
+│       └── automation/
+│           ├── __init__.py               # 自动化层公开入口；上层只从这里导入正式工作流
+│           ├── common.py                 # 共享基础设施：浏览器会话、headless 解析、公共异常/进度类型
+│           ├── wms_export.py             # “导出所有订单”主编排：页面、模板、提交、下载串联
+│           ├── export_task_center.py      # 导出任务中心组件：快照、轮询、识别、下载、复制文件
+│           ├── wms_wave_pick.py          # “所有波次拣货”主编排：并发批次、单波次提交、最终统一对账
+│           ├── pdf_centering.py          # 按文字、表格线和条码等真实 PDF 对象逐页最终居中
+│           ├── wms_wave_print.py         # “打印选中波次”：模板校验、PDF 原子保存、qpdf 顺序合并
+│           └── wave_pending.py            # 待拣货列表组件：登录等待、分页快照、波次定位、全量读取
+│
+├── frontend/                             # 控制台页面（Vue 源码保留不部署；实际页面为 dist/index.html，由 planner/build.py 生成）
+│   ├── index.html                        # Vite HTML 入口
+│   ├── package.json                      # 前端依赖和 build/dev/preview 命令
+│   ├── pnpm-lock.yaml                    # 前端依赖锁文件
+│   ├── vite.config.js                    # Vite 构建配置
+│   └── src/
+│       ├── main.js                       # 创建并挂载 Vue 应用
+│       ├── App.vue                       # 任务选择、状态恢复、容错轮询、日志自动滚动、结果展示
+│       ├── api.js                        # 带超时与错误归一化的 fetch 封装和任务 API 调用
+│       └── style.css                     # 控制台视觉、Safari 中文字体、焦点和响应式布局
+│
+├── config/
+│   └── automation.json                   # 生产 URL、模板名、选择器、超时、波次并发数
+│
+├── scripts/
+│   ├── setup.sh                          # 创建虚拟环境并安装后端/浏览器依赖
+│   ├── dev.sh                            # 开发模式：uvicorn --reload（页面由 planner/build.py 部署）
+│   ├── start.sh                          # 单端口启动：校验 frontend/dist/index.html 后启动 127.0.0.1:8000
+│   └── browser_smoke.py                  # 独立浏览器冒烟检查脚本；不会由网页任务自动调用
+│
+├── tests/
+│   ├── test_api.py                       # API 健康检查与生产操作确认校验
+│   ├── test_config.py                    # JSON 配置结构及关键安全参数校验
+│   ├── test_job_manager.py               # 任务状态、模式传递、重复提交拦截和立即取消
+│   ├── test_wms_export.py                # 模板稳定性、任务识别、下载路径与副本
+│   ├── test_wave_pick.py                 # 五并发、指定波次筛选、分页去重、错误策略和统一对账
+│   ├── test_pdf_centering.py             # PDF 对象边界、平移方向与居中结果测试
+│   └── test_wave_print.py                # 打印输入校验、顺序执行、PDF 原子保存和 qpdf 命令
+│
+├── data/                                 # 运行数据（不属于业务源码）
+│   └── browser-profile/                  # 专用 Chrome 持久化资料；保存 WMS 登录会话
+├── downloads/                            # 项目内导出文件；程序只新增，不覆盖同名文件
+├── outputs/                              # 预留输出目录
+├── work/                                 # 临时分析/检查文件，不参与正式运行
+├── pyproject.toml                        # pytest 路径与 asyncio 测试配置
+├── .gitignore                            # 排除虚拟环境、构建产物、浏览器资料、下载文件
+├── README.md                             # 面向使用者的功能、启动、配置和安全说明
+├── PROJECT_STRUCTURE.txt                 # 当前文件：面向维护者的详细结构说明
+└── AI_HANDOFF.md                         # 面向其他 AI/开发者的行为、架构、部署和接手指南
+
+
+二、后端调用树
+--------------
+
+浏览器中的 Vue 页面
+└── frontend/src/api.js
+    ├── GET /api/jobs                         # 刷新页面后恢复当前或最近任务
+    └── POST /api/jobs
+        └── backend/app/api/routes.py
+            └── JobManager.create(mode, browser_mode)
+                ├── 已有 queued/running -> 返回 409，拒绝重复生产任务
+                └── 当前空闲 -> 创建任务
+                    └── asyncio 后台任务 JobManager._execute()
+                        ├── mode == "export"
+                        │   └── WmsExportAutomation.run()
+                        │       ├── common.open_browser_context()
+                        │       ├── 打开 parcel 页面并等待登录/数据
+                        │       ├── 校验“渠道拆分”模板和关键字段
+                        │       ├── 点击最终导出按钮
+                        │       └── ExportTaskCenter
+                        │           ├── snapshot()                  # 导出前任务列表
+                        │           ├── wait_until_downloadable()   # 对比新任务并等待完成
+                        │           ├── download()                  # 下载唯一匹配文件
+                        │           └── copy_to_secondary_downloads() # 复制到用户下载目录
+                        │
+                        ├── mode == "print_waves"
+                        │   └── WmsWavePrintAutomation.run()
+                        │       ├── 校验/去重波次号并生成 Paper合并_YYYY-MM-DD.pdf
+                        │       ├── PendingWaveCatalog.locate_wave() # 在“全部”页签逐页定位 rowid
+                        │       ├── 点击唯一“更多”与“打印汇总拣货单”
+                        │       ├── 仅确认当前波次的“已打印过拣货单”提示
+                        │       ├── 校验模板“一件代发汇总拣货单”
+                        │       ├── 等待模板区域唯一“打印”按钮可用并点击
+                        │       ├── 捕获唯一静态 Pick List 多页预览
+                        │       ├── 保留条码、移除脚本/导航/预览阴影并渲染 US Letter
+                        │       ├── pdf_centering.center_pdf_visible_content() # 按真实 PDF 对象逐页居中
+                        │       ├── 原子保存 <波次号>.pdf
+                        │       └── QpdfMerger.merge()               # 按输入顺序合并为 Paper合并_YYYY-MM-DD.pdf
+                        │
+                        └── mode == "pick_waves"
+                            └── WmsWavePickAutomation.run()
+                                ├── common.open_browser_context()
+                                ├── PendingWaveCatalog.snapshot()    # 遍历分页并冻结初始范围
+                                ├── wave_nos 非空 -> 只保留输入列表与待拣货快照的交集
+                                │   └── 不在快照中的输入 -> 跳过并列入 failed_wave_nos
+                                ├── wave_nos 为空 -> 使用完整待拣货快照
+                                ├── 每批最多 5 个页面并发执行
+                                │   ├── PendingWaveCatalog.prepare_page()
+                                │   └── _pick_wave()
+                                │       ├── 点击波次“拣货”
+                                │       ├── 全选 SKU
+                                │       ├── 点击确认
+                                │       ├── 只确认可识别的截单提醒
+                                │       └── 等待成功/失败消息
+                                ├── 网络错误 -> 记录后忽略，不定向复查、不重试
+                                └── 常规流程结束后的唯一收尾检查
+                                    └── PendingWaveCatalog.find_remaining()
+                                        ├── 一次性读取当前完整待拣货列表
+                                        ├── 指定模式 -> 与本次匹配并锁定的波次比较
+                                        ├── 留空模式 -> 与任务启动时的完整快照比较
+                                        ├── 目标全部消失 -> 完成
+                                        └── 仍有目标波次 -> 不重试，报告 partial
+
+
+三、应用启动顺序
+--------------
+
+scripts/start.sh
+├── 校验 frontend/dist/index.html 存在（页面由 planner/build.py 部署）
+└── 以 PYTHONPATH=backend 启动 Uvicorn
+    └── app.main:lifespan
+        ├── Settings.from_environment()             # 读取路径和浏览器默认值
+        ├── Settings.load_automation()               # 校验 config/automation.json
+        ├── 创建 WmsExportAutomation
+        ├── 创建 WmsWavePickAutomation
+        ├── 创建 WmsWavePrintAutomation
+        └── 创建 JobManager                          # 三个工作流共用一个任务锁
+
+注意：Python 后端文件修改后必须重启 Uvicorn；仅修改 Vue/CSS 时需要重新 build 并刷新页面。
+
+
+四、任务状态与日志
+----------------
+
+queued
+└── 任务已创建；此状态存在时后端拒绝再次创建生产任务
+    └── running
+        ├── succeeded    # 全部完成
+        ├── partial      # 有输入波次不可用，或最终检查后仍有目标波次留在待拣货列表
+        ├── failed       # 非网络错误、页面结构异常、模板异常或超时
+        └── cancelled    # 用户通过取消接口终止任务
+
+每次 progress(stage, message) 都会：
+1. 将状态更新为 running；
+2. 更新 updated_at；
+3. 追加一条带本地时区时间的 JobEvent；
+4. 由前端轮询后显示，并自动滚动到最新日志。
+
+前端初始化会先调用 GET /api/jobs。若发现 queued/running 任务，会恢复该任务并继续轮询；
+一次临时请求失败只会显示连接提示，随后自动重试，不会让日志永久停止更新。
+
+
+五、配置与代码的边界
+------------------
+
+优先修改 config/automation.json 的情况：
+- WMS URL 变化；
+- 页面 CSS 选择器变化；
+- 登录、页面加载、导出、下载等超时需要调整；
+- 模板名称、必需字段或最少字段数变化；
+- 波次并发数变化（当前代码另有“必须等于 5”的生产安全校验）。
+- 打印模板、打印中心选择器、单次最大波次数或 PDF 纸张大小变化。
+
+波次拣货输入上限目前由前端与 API 固定为 500；打印上限由前端/API 固定为 100，
+并与 automation.json 中的打印上限保持一致。修改这些规则时需同步修改校验与测试。
+
+需要修改 Python 的情况：
+- 页面交互顺序改变；
+- 新增任务类型；
+- 错误恢复策略改变；
+- 任务结果字段改变；
+- 文件保存或识别规则改变。
+
+需要修改 Vue 的情况：
+- 增加任务选项或输入项；
+- 修改轮询、状态展示、日志/结果布局；
+- 调整浏览器模式选择方式。
+
+
+六、安全边界
+------------
+
+- common.py 只负责浏览器生命周期，不负责业务点击。
+- ExportTaskCenter 只识别本次新增且文件名前缀匹配的任务，不下载旧历史任务。
+- WmsExportAutomation 只有一处最终生产导出点击，且点击前必须完成模板字段校验。
+- PendingWaveCatalog 只读取/定位待拣货列表，不提交拣货。
+- WmsWavePickAutomation 只处理启动时待拣货快照中的波次；输入非空时还必须属于用户输入列表。网络异常直接忽略。主流程结束后只对本次锁定范围做一次完整列表对账，不针对异常波次单独查询或再次提交。
+- WmsWavePrintAutomation 只处理请求中明确列出的合法波次号；每一步要求目标唯一，直接生成 PDF 而不通过系统打印框坐标操作。所有单文件成功后才调用 qpdf 合并。
+- JobManager 在创建时拒绝第二个 queued/running 任务，并保留单一 asyncio.Lock 作为执行层保护；即使网页刷新或重复请求，也不会把相同生产操作排进后续队列。
+- 取消接口会显式落盘内存状态为 cancelled，包括任务刚创建、协程尚未来得及启动的边界情况，从而释放下一次任务提交。
+- data/browser-profile/ 含登录会话，不能提交、复制给他人或作为普通源码清理。
+- 自动化测试不连接生产 WMS；生产页面验证只能在用户明确指示时执行。
+
+
+七、新增工作流的推荐位置
+----------------------
+
+1. 在 automation/ 新建独立主编排文件，例如 wms_inventory.py。
+2. 通用浏览器会话复用 common.open_browser_context()。
+3. 页面列表、弹窗、任务中心等独立区域拆成组件文件，不堆入主编排。
+4. 在 automation/__init__.py 只导出上层真正需要的公开工作流和结果类型。
+5. 在 JobManager 的 RunMode 和执行分支中注册新任务。
+6. 在 routes.py 的请求模型中复用 RunMode，不重复定义字符串枚举。
+7. 在 frontend/src/App.vue 增加对应任务选择。
+8. 在 tests/ 新建同名测试文件，覆盖成功、失败、取消和异常恢复边界。
+9. 更新本文件、README.md 和 AI_HANDOFF.md，保持结构说明与实际代码一致。
