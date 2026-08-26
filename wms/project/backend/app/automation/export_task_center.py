@@ -9,8 +9,17 @@ from pathlib import Path
 
 from playwright.async_api import Page, TimeoutError as PlaywrightTimeoutError
 
-from app.automation.common import AutomationError, ProgressCallback
+from app.automation.common import (
+    AutomationError,
+    ProgressCallback,
+    first_page,
+    wait_for_loading,
+)
 from app.core.config import AutomationConfig, Settings
+
+
+class _DownloadInterrupted(Exception):
+    """下载传输被 WMS 关页中断；由 download() 捕获后恢复页面重试一次。"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,18 +110,64 @@ class ExportTaskCenter:
         """Download exactly the task selected by the before/after comparison.
 
         全程分阶段计时并上报 download_timing 事件，便于定位下载慢的环节。
+
+        已知场景：WMS 点击下载后会自行关闭页面/标签，使挂在页面上的下载传输
+        中断（浏览器下载事件已触发但文件停在 .crdownload）。此时自动恢复页面
+        并重试一次：重新打开订单页 → 任务中心 → 再次点击下载。
+        安全边界：重试只重复“下载”这一幂等动作，绝不重复提交导出。
         """
         t_start = time.monotonic()
+        last_error: Exception | None = None
+        for attempt in range(2):
+            if attempt > 0:
+                await progress(
+                    "download_retry",
+                    "WMS 页面在下载时自行关闭导致下载中断，正在重新打开订单页并再次下载"
+                    "（不重复提交导出）。",
+                )
+                try:
+                    page = await first_page(page.context)
+                    await page.goto(
+                        self.config.target_url,
+                        wait_until="domcontentloaded",
+                        timeout=self.config.timeouts_ms.navigation,
+                    )
+                    await wait_for_loading(
+                        page,
+                        self.config.selectors.loading_mask,
+                        self.config.timeouts_ms.navigation,
+                        "重试前订单页加载超时。",
+                    )
+                except Exception as exc:
+                    raise AutomationError(f"下载中断且页面恢复失败：{exc}") from exc
+            try:
+                return await self._try_download(page, task, progress, t_start)
+            except _DownloadInterrupted as exc:
+                last_error = exc.__cause__ or exc
+                continue
+        raise AutomationError(
+            f"WMS 页面在下载时自行关闭，重试后仍未拿到完整文件 {task.filename}："
+            f"{last_error}。请从任务中心手动下载。"
+        )
+
+    async def _try_download(
+        self,
+        page: Page,
+        task: TaskCenterItem,
+        progress: ProgressCallback,
+        t_start: float,
+    ) -> Path:
         selectors = self.config.selectors
+        await self._open(page)
         rows = page.locator(selectors.task_center_item).filter(has_text=task.filename)
         if await rows.count() != 1:
-            await self._close(page)
+            await self._close_safe(page)
             raise AutomationError(f"无法唯一定位刚完成的导出任务：{task.filename}")
         t_rows = time.monotonic()
 
         button = rows.locator(selectors.task_center_download_button).filter(has_text="下载")
         if await button.count() != 1 or not await button.is_enabled():
-            await self._close(page)
+            await self._close_safe(page)
             raise AutomationError(f"导出任务已出现，但下载按钮不可用：{task.filename}")
         t_button = time.monotonic()
 
@@ -130,8 +185,15 @@ class ExportTaskCenter:
             download_obj = await info.value
         except PlaywrightTimeoutError:
             disk_file = await self._await_disk_download(t_click, dir_before)
+        except Exception as exc:
+            # 点击/等待下载事件时页面被 WMS 关闭 → 可恢复，交由上层重试一次
+            raise _DownloadInterrupted from exc
         t_event = time.monotonic()
 
+        # 弹层清理是装饰性步骤：页面可能已被 WMS 关闭，失败不得掩盖保存阶段的真实错误
+        await self._close_safe(page)
+
+        target: Path
         try:
             if download_obj is not None:
                 target = self._unique_download_path(
@@ -149,8 +211,9 @@ class ExportTaskCenter:
                     disk_file.replace(target)
         except OSError as exc:
             raise AutomationError(f"导出文件保存失败：{task.filename}") from exc
-        finally:
-            await self._close(page)
+        except Exception as exc:
+            # 下载传输被页面关闭中断（事件已触发但文件未完成）→ 可恢复，重试一次
+            raise _DownloadInterrupted from exc
         t_saved = time.monotonic()
         await progress(
             "download_timing",
@@ -221,6 +284,13 @@ class ExportTaskCenter:
             raise AutomationError("任务中心已打开，但无法定位其关闭按钮。")
         await trigger.click(timeout=timeout)
         await popover.wait_for(state="hidden", timeout=timeout)
+
+    async def _close_safe(self, page: Page) -> None:
+        """尽力关闭任务中心弹层；页面已被 WMS 自行关闭时静默跳过。"""
+        try:
+            await self._close(page)
+        except Exception:
+            pass
 
     async def _read_items(self, page: Page) -> list[TaskCenterItem]:
         selectors = self.config.selectors

@@ -178,3 +178,132 @@ async def test_await_disk_download_ignores_old_and_nonprefix_files(tmp_path) -> 
     await task
     # 只应收到前缀匹配的新文件，旧文件与非前缀文件均被忽略
     assert found.name == "ParcelOutbound_20260821000001.xlsx"
+
+
+def _fake_task_page(save_side_effect):
+    """download() 流程所需页面替身：任务中心行 + 下载按钮 + expect_download。"""
+    selectors = Settings.from_environment().load_automation().selectors
+    page = MagicMock()
+    page.context = MagicMock()
+
+    button = MagicMock()
+    button.count = AsyncMock(return_value=1)
+    button.is_enabled = AsyncMock(return_value=True)
+    button.click = AsyncMock()
+
+    rows = MagicMock()
+    rows.count = AsyncMock(return_value=1)
+    btn_loc = MagicMock()
+    btn_loc.filter.return_value = button
+    rows.locator = MagicMock(return_value=btn_loc)
+
+    download_obj = MagicMock()
+    download_obj.suggested_filename = "ParcelOutbound_20260826000000.xlsx"
+    download_obj.save_as = AsyncMock(side_effect=save_side_effect)
+
+    class _Info:
+        def __init__(self, download_obj):
+            self._download_obj = download_obj
+
+        @property
+        def value(self):
+            async def _get():
+                return self._download_obj
+
+            return _get()
+
+    info = _Info(download_obj)
+
+    class _ExpectCM:
+        async def __aenter__(self):
+            return info
+
+        async def __aexit__(self, *exc):
+            return False
+
+    page.expect_download = MagicMock(return_value=_ExpectCM())
+
+    def _locator(sel, **kw):
+        m = MagicMock()
+        if sel == selectors.task_center_item:
+            m.filter.return_value = rows
+        elif sel == selectors.task_center_download_button:
+            m.filter.return_value = button
+        return m
+
+    page.locator = MagicMock(side_effect=_locator)
+    page.goto = AsyncMock()
+    return page
+
+
+def _download_center(tmp_path):
+    settings = Settings.from_environment().model_copy(update={"downloads_dir": tmp_path})
+    center = ExportTaskCenter(settings, settings.load_automation())
+    center._open = AsyncMock()
+    center._close_safe = AsyncMock()
+    center._snapshot_downloads_dir = MagicMock(return_value=set())
+    center._unique_download_path = MagicMock(
+        return_value=tmp_path / "ParcelOutbound_20260826000000.xlsx"
+    )
+    return center
+
+
+@pytest.mark.asyncio
+async def test_download_retries_once_when_page_closes_mid_download(tmp_path, monkeypatch) -> None:
+    """回归：WMS 关页导致下载中断时，自动恢复页面并重试一次下载（不重复提交导出）。"""
+    import app.automation.export_task_center as mod
+
+    center = _download_center(tmp_path)
+    page1 = _fake_task_page([RuntimeError("Download interrupted by page close")])
+    page2 = _fake_task_page([None])  # 第二次 save_as 成功
+    monkeypatch.setattr(mod, "first_page", AsyncMock(return_value=page2))
+    monkeypatch.setattr(mod, "wait_for_loading", AsyncMock())
+    task = TaskCenterItem(
+        filename="ParcelOutbound_20260826000000.xlsx",
+        created_at="t", status="", icon_class="", downloadable=True,
+    )
+    calls: list[tuple[str, str]] = []
+
+    async def progress(stage: str, msg: str) -> None:
+        calls.append((stage, msg))
+
+    target = await center.download(page1, task, progress)
+
+    assert target == tmp_path / "ParcelOutbound_20260826000000.xlsx"
+    assert page2.goto.await_count == 1
+    assert any(stage == "download_retry" for stage, _ in calls), calls
+
+
+@pytest.mark.asyncio
+async def test_download_stops_after_two_interrupted_attempts(tmp_path, monkeypatch) -> None:
+    """回归：重试一次后仍被关页中断 → 停止并明确提示手动下载。"""
+    import app.automation.export_task_center as mod
+
+    center = _download_center(tmp_path)
+    page1 = _fake_task_page([RuntimeError("Download interrupted by page close")])
+    page2 = _fake_task_page([RuntimeError("Download interrupted again")])
+    monkeypatch.setattr(mod, "first_page", AsyncMock(return_value=page2))
+    monkeypatch.setattr(mod, "wait_for_loading", AsyncMock())
+    task = TaskCenterItem(
+        filename="ParcelOutbound_20260826000000.xlsx",
+        created_at="t", status="", icon_class="", downloadable=True,
+    )
+
+    async def progress(stage: str, msg: str) -> None:
+        pass
+
+    with pytest.raises(AutomationError, match="请从任务中心手动下载"):
+        await center.download(page1, task, progress)
+    assert page2.goto.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_close_safe_swallows_closed_page() -> None:
+    """回归：弹层清理遇到页面已关闭时静默跳过，不掩盖保存阶段的真实错误。"""
+    settings = Settings.from_environment()
+    center = ExportTaskCenter(settings, settings.load_automation())
+    center._close = AsyncMock(
+        side_effect=RuntimeError("Target page, context or browser has been closed")
+    )
+
+    await center._close_safe(MagicMock())  # 不抛异常
