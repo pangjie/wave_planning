@@ -111,5 +111,14 @@ async def open_browser_context(
         context = await playwright.chromium.launch_persistent_context(**launch_options)
         try:
             yield context
-        finally:
+        except BaseException:
+            # 业务异常路径：close() 失败（如页面/浏览器已断开，报
+            # "Target page, context or browser has been closed"）绝不能覆盖
+            # 原始异常——否则日志只看到清理错误，第一现场被吞掉。
+            try:
+                await context.close()
+            except Exception:
+                pass
+            raise
+        else:
             await context.close()
