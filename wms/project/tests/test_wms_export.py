@@ -249,41 +249,12 @@ def _download_center(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_download_retries_once_when_page_closes_mid_download(tmp_path, monkeypatch) -> None:
-    """回归：WMS 关页导致下载中断时，自动恢复页面并重试一次下载（不重复提交导出）。"""
-    import app.automation.export_task_center as mod
+async def test_download_raises_interrupted_when_page_closes(tmp_path) -> None:
+    """回归：WMS 关页中断下载时，download() 抛可恢复信号（换新浏览器重试由导出流程负责）。"""
+    from app.automation.export_task_center import DownloadInterruptedError
 
     center = _download_center(tmp_path)
-    page1 = _fake_task_page([RuntimeError("Download interrupted by page close")])
-    page2 = _fake_task_page([None])  # 第二次 save_as 成功
-    monkeypatch.setattr(mod, "first_page", AsyncMock(return_value=page2))
-    monkeypatch.setattr(mod, "wait_for_loading", AsyncMock())
-    task = TaskCenterItem(
-        filename="ParcelOutbound_20260826000000.xlsx",
-        created_at="t", status="", icon_class="", downloadable=True,
-    )
-    calls: list[tuple[str, str]] = []
-
-    async def progress(stage: str, msg: str) -> None:
-        calls.append((stage, msg))
-
-    target = await center.download(page1, task, progress)
-
-    assert target == tmp_path / "ParcelOutbound_20260826000000.xlsx"
-    assert page2.goto.await_count == 1
-    assert any(stage == "download_retry" for stage, _ in calls), calls
-
-
-@pytest.mark.asyncio
-async def test_download_stops_after_two_interrupted_attempts(tmp_path, monkeypatch) -> None:
-    """回归：重试一次后仍被关页中断 → 停止并明确提示手动下载。"""
-    import app.automation.export_task_center as mod
-
-    center = _download_center(tmp_path)
-    page1 = _fake_task_page([RuntimeError("Download interrupted by page close")])
-    page2 = _fake_task_page([RuntimeError("Download interrupted again")])
-    monkeypatch.setattr(mod, "first_page", AsyncMock(return_value=page2))
-    monkeypatch.setattr(mod, "wait_for_loading", AsyncMock())
+    page = _fake_task_page([RuntimeError("Download interrupted by page close")])
     task = TaskCenterItem(
         filename="ParcelOutbound_20260826000000.xlsx",
         created_at="t", status="", icon_class="", downloadable=True,
@@ -292,9 +263,107 @@ async def test_download_stops_after_two_interrupted_attempts(tmp_path, monkeypat
     async def progress(stage: str, msg: str) -> None:
         pass
 
+    with pytest.raises(DownloadInterruptedError):
+        await center.download(page, task, progress)
+
+
+@pytest.mark.asyncio
+async def test_run_retries_download_in_new_browser(tmp_path, monkeypatch) -> None:
+    """回归：浏览器被 WMS 关页杀死后，导出流程换新浏览器只补下载，不重复提交导出。"""
+    import app.automation.wms_export as mod
+    from app.automation.export_task_center import DownloadInterruptedError
+
+    automation = make_automation()
+    task = TaskCenterItem(
+        filename="ParcelOutbound_20260826000000.xlsx",
+        created_at="t", status="", icon_class="", downloadable=True,
+    )
+    monkeypatch.setattr(
+        automation, "_prepare_and_submit",
+        AsyncMock(return_value=("已提交。", "渠道拆分", task)),
+    )
+    monkeypatch.setattr(
+        automation, "_resume_download",
+        AsyncMock(return_value=tmp_path / "ParcelOutbound_20260826000000.xlsx"),
+    )
+    monkeypatch.setattr(
+        automation.task_center, "download",
+        AsyncMock(side_effect=[
+            DownloadInterruptedError(RuntimeError("Target closed")),
+            tmp_path / "ParcelOutbound_20260826000000.xlsx",
+        ]),
+    )
+
+    opens = 0
+
+    class _FakeBrowserCM:
+        async def __aenter__(self):
+            nonlocal opens
+            opens += 1
+            return MagicMock()
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(
+        mod, "open_browser_context",
+        lambda *a, **kw: _FakeBrowserCM(),
+    )
+    monkeypatch.setattr(mod, "first_page", AsyncMock(return_value=MagicMock()))
+    calls: list[tuple[str, str]] = []
+
+    async def progress(stage: str, msg: str) -> None:
+        calls.append((stage, msg))
+
+    result = await automation.run(progress, headless=True)
+
+    assert result.downloaded_file.endswith("ParcelOutbound_20260826000000.xlsx")
+    assert opens == 2  # 第二次进入新浏览器
+    assert automation._prepare_and_submit.await_count == 1  # 导出只提交一次
+    assert any(stage == "download_retry" for stage, _ in calls), calls
+
+
+@pytest.mark.asyncio
+async def test_run_stops_with_manual_download_hint_when_retry_also_interrupted(
+    tmp_path, monkeypatch
+) -> None:
+    """回归：换新浏览器重试后仍被关页中断 → 停止并明确提示手动下载。"""
+    import app.automation.wms_export as mod
+    from app.automation.export_task_center import DownloadInterruptedError
+
+    automation = make_automation()
+    task = TaskCenterItem(
+        filename="ParcelOutbound_20260826000000.xlsx",
+        created_at="t", status="", icon_class="", downloadable=True,
+    )
+    monkeypatch.setattr(
+        automation, "_prepare_and_submit",
+        AsyncMock(return_value=("已提交。", "渠道拆分", task)),
+    )
+    monkeypatch.setattr(
+        automation, "_resume_download",
+        AsyncMock(side_effect=DownloadInterruptedError(RuntimeError("Target closed again"))),
+    )
+    monkeypatch.setattr(
+        automation.task_center, "download",
+        AsyncMock(side_effect=DownloadInterruptedError(RuntimeError("Target closed"))),
+    )
+
+    class _FakeBrowserCM:
+        async def __aenter__(self):
+            return MagicMock()
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(mod, "open_browser_context", lambda *a, **kw: _FakeBrowserCM())
+    monkeypatch.setattr(mod, "first_page", AsyncMock(return_value=MagicMock()))
+
+    async def progress(stage: str, msg: str) -> None:
+        pass
+
     with pytest.raises(AutomationError, match="请从任务中心手动下载"):
-        await center.download(page1, task, progress)
-    assert page2.goto.await_count == 1
+        await automation.run(progress, headless=True)
 
 
 @pytest.mark.asyncio
