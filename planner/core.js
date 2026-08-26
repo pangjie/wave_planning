@@ -31,6 +31,8 @@ var KIND_SHORT = { hot: '爆品', paper: '单件', multi: '多件', mix: '混件
 var KIND_TYPE = { hot: '单件', paper: '单件paper', multi: '多件', mix: '混件paper' };
 var DOMAIN_CHANNELS = ['CBT', 'CBS', 'SwiftX', 'SpeedX', 'YanWen', 'Gofo', 'UPS', 'USPS', 'Fedex', 'UniUni', 'BFE', '未识别'];
 var MERGED_CHANNELS = ['CBT', 'CBS', '普通'];
+var FIXED_CHANNEL_ORDER = ['CBT', 'UniUni', 'YanWen', 'USPS', 'SwiftX', 'SpeedX', 'Gofo', 'CBS'];
+var FIXED_MERGED_ORDER = ['CBT', '普通', 'CBS'];
 /* 导出展示用分段名：不编号（爆品1 → 爆品；单件paper-2 → 单件paper） */
 function segDisplayName(name) {
   return String(name).replace(/-\d+$/, '').replace(/\d+$/, '');
@@ -574,6 +576,26 @@ function sortByDefault(chans) {
   });
   return chans;
 }
+function sortByFixed(chans, mode) {
+  var fixed = mode === 'merged' ? FIXED_MERGED_ORDER : FIXED_CHANNEL_ORDER;
+  var rank = new Map();
+  fixed.forEach(function (id, i) { rank.set(id, i); });
+  chans.sort(function (a, b) {
+    if (a.id === '未识别' && b.id !== '未识别') return 1;
+    if (b.id === '未识别' && a.id !== '未识别') return -1;
+    var aZero = a.total === 0, bZero = b.total === 0;
+    if (aZero !== bZero) return aZero ? 1 : -1;
+    var ar = rank.has(a.id) ? rank.get(a.id) : Infinity;
+    var br = rank.has(b.id) ? rank.get(b.id) : Infinity;
+    if (ar !== br) return ar - br;
+    if (b.total !== a.total) return b.total - a.total;
+    return a.id.localeCompare(b.id, 'zh');
+  });
+  return chans;
+}
+function sortChannelsForDisplay(chans, mode, sortMode) {
+  return sortMode === 'desc' ? sortByDefault(chans) : sortByFixed(chans, mode);
+}
 
 /* ---------- 11. 分类 SKU 序列（固定口径） ---------- */
 function buildClassSeq(records) {
@@ -664,6 +686,32 @@ function residentChannels(analysis) {
   return analysis.channels.filter(function (ch) {
     return analysis.mode !== 'normal' || ch.id !== '未识别';
   });
+}
+function channelEnabledByDefault(ch) {
+  return Boolean(ch && ch.total > 0 && ch.id !== '未识别');
+}
+function collectOrdinaryAbsorbedOrderNos(baseAnalysis, channelSelected, segSelected) {
+  var absorbed = new Set();
+  baseAnalysis.channels.forEach(function (ch) {
+    if (ch.id === 'CBT' || ch.id === 'CBS' || ch.id === '未识别' || ch.id === '普通') return;
+    var channelOn = channelSelected.has(ch.id);
+    ch.segments.forEach(function (seg) {
+      if (channelOn && segSelected.has(ch.id + '|' + seg.name)) return;
+      seg.orderNos.forEach(function (orderNo) { absorbed.add(orderNo); });
+    });
+  });
+  return absorbed;
+}
+function buildOrdinaryEvolvedAnalysis(baseAnalysis, records, qtyMap, paramsFor, channelSelected, segSelected) {
+  var absorbed = collectOrdinaryAbsorbedOrderNos(baseAnalysis, channelSelected, segSelected);
+  var ordinaryRecords = records.filter(function (record) {
+    return record.channelId === '未识别' || absorbed.has(record.orderNo);
+  });
+  var ordinaryParams = typeof paramsFor === 'function' ? paramsFor('普通') : DEFAULT_UNIFIED;
+  var ordinary = analyzeChannel('普通', ordinaryRecords, qtyMap, ordinaryParams);
+  var channels = baseAnalysis.channels.filter(function (ch) { return ch.id !== '未识别'; });
+  channels.push(ordinary);
+  return Object.assign({}, baseAnalysis, { channels: channels });
 }
 
 /* =============================================================
@@ -1375,6 +1423,14 @@ if (typeof module !== 'undefined' && module.exports) {
     selectedOrderCount: selectedOrderCount,
     selectedSkuCount: selectedSkuCount,
     residentChannels: residentChannels,
+    channelEnabledByDefault: channelEnabledByDefault,
+    collectOrdinaryAbsorbedOrderNos: collectOrdinaryAbsorbedOrderNos,
+    buildOrdinaryEvolvedAnalysis: buildOrdinaryEvolvedAnalysis,
+    sortByDefault: sortByDefault,
+    sortByFixed: sortByFixed,
+    sortChannelsForDisplay: sortChannelsForDisplay,
+    FIXED_CHANNEL_ORDER: FIXED_CHANNEL_ORDER,
+    FIXED_MERGED_ORDER: FIXED_MERGED_ORDER,
     splitOversizedHotSegments: splitOversizedHotSegments,
     HOT_SINGLE_SKU_SPLIT_LIMIT: HOT_SINGLE_SKU_SPLIT_LIMIT,
     DEFAULT_UNIFIED: DEFAULT_UNIFIED,

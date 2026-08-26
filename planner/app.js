@@ -26,7 +26,7 @@
     return {
       unified: { hotLine: 10, capacity: 400, multiSegs: 1, mixSegs: 1, absorb: 1 },
       per: new Map(),
-      order: { custom: false, list: [] },
+      order: { sortMode: 'fixed', custom: false, list: [] },
       sel: { channels: new Set(), segs: new Set(), seenChannels: new Set(), seenSegs: new Set() }
     };
   }
@@ -35,8 +35,9 @@
     records: [],
     qtyMap: {},
     merged: false,
+    ordinaryEvolved: false,
     modes: { normal: makeModeState(), merged: makeModeState() },
-    analysis: { normal: null, merged: null }
+    analysis: { normal: null, merged: null, ordinary: null }
   };
 
   function modeKey() { return state.merged ? 'merged' : 'normal'; }
@@ -50,14 +51,31 @@
     if (!state.analysis[key]) {
       state.analysis[key] = analyze(state.records, state.qtyMap, key, paramsResolver(key));
     }
+    if (key === 'normal' && state.ordinaryEvolved) {
+      if (!state.analysis.ordinary) {
+        var normalMode = state.modes.normal;
+        state.analysis.ordinary = buildOrdinaryEvolvedAnalysis(
+          state.analysis.normal, state.records, state.qtyMap, paramsResolver('normal'),
+          normalMode.sel.channels, normalMode.sel.segs
+        );
+      }
+      return state.analysis.ordinary;
+    }
     return state.analysis[key];
   }
   function curAnalysis() { return getAnalysis(modeKey()); }
-  function invalidate(key) { state.analysis[key] = null; }
+  function invalidate(key) {
+    state.analysis[key] = null;
+    if (key === 'normal') state.analysis.ordinary = null;
+  }
+  function invalidateOrdinary() { state.analysis.ordinary = null; }
 
   /* ---------- 渠道顺序 ---------- */
   function orderedChannels(a, orderState) {
-    if (!orderState.custom || !orderState.list.length) return a.channels.slice();
+    var sortMode = orderState.sortMode === 'desc' ? 'desc' : 'fixed';
+    if (!orderState.custom || !orderState.list.length) {
+      return sortChannelsForDisplay(a.channels.slice(), a.mode, sortMode);
+    }
     var byId = new Map(a.channels.map(function (c) { return [c.id, c]; }));
     var out = [], used = new Set();
     orderState.list.forEach(function (id) {
@@ -65,8 +83,11 @@
       if (c) { out.push(c); used.add(id); }
     });
     var news = a.channels.filter(function (c) { return !used.has(c.id); });
-    sortByDefault(news);
-    return out.concat(news);
+    sortChannelsForDisplay(news, a.mode, sortMode);
+    out = out.concat(news);
+    /* 手动排序也不能改变「未识别」绝对置底的规则。 */
+    var unknown = out.filter(function (c) { return c.id === '未识别'; });
+    return out.filter(function (c) { return c.id !== '未识别'; }).concat(unknown);
   }
 
   /* ---------- 参数读写 ---------- */
@@ -140,7 +161,8 @@
     state.waveNos = new Map();
     state.records = [];
     state.qtyMap = {};
-    state.analysis = { normal: null, merged: null };
+    state.ordinaryEvolved = false;
+    state.analysis = { normal: null, merged: null, ordinary: null };
     state.modes.normal = makeModeState();
     state.modes.merged = makeModeState();
     state.modes.normal.unified = keepN;
@@ -149,7 +171,10 @@
   function syncSelection(a) {
     var m = ms();
     a.channels.forEach(function (ch) {
-      if (!m.sel.seenChannels.has(ch.id)) { m.sel.seenChannels.add(ch.id); m.sel.channels.add(ch.id); }
+      if (!m.sel.seenChannels.has(ch.id)) {
+        m.sel.seenChannels.add(ch.id);
+        if (channelEnabledByDefault(ch)) m.sel.channels.add(ch.id);
+      }
       ch.segments.forEach(function (s) {
         var k = ch.id + '|' + s.name;
         if (!m.sel.seenSegs.has(k)) { m.sel.seenSegs.add(k); m.sel.segs.add(k); }
@@ -314,11 +339,13 @@
 
     chans.forEach(function (ch) {
       var p = m.per.get(ch.id) || m.unified;
+      var holdHint = !state.merged && ((!state.ordinaryEvolved && ch.id === '未识别') || (state.ordinaryEvolved && ch.id === '普通'))
+        ? (state.ordinaryEvolved ? ' · 按住3秒退化为未识别' : ' · 按住3秒进化为普通') : '';
       rows += '<tr class="prow' + (m.sel.channels.has(ch.id) ? '' : ' off') + '" data-ch="' + esc(ch.id) + '">' +
         '<td class="left"><div class="ch-cell">' +
         '<span class="chn" role="button" aria-pressed="' + (m.sel.channels.has(ch.id) ? 'true' : 'false') +
         '" tabindex="0" draggable="true" data-ch="' + esc(ch.id) + '" style="--chc:' + tagColor(ch.id) +
-        '" title="点击切换渠道勾选 · 拖动排序 · 聚焦后 Alt+↑↓">' + esc(ch.id) + '</span></div></td>' +
+        '" title="点击切换渠道勾选 · 拖动排序 · 聚焦后 Alt+↑↓' + holdHint + '">' + esc(ch.id) + '</span></div></td>' +
         '<td class="num" data-channel-orders>' + effectiveChannelOrderSum(ch) + '</td>' +
         '<td>' + paramCell(ch.id, 'capacity', p.capacity) + '</td>' +
         '<td>' + paramCell(ch.id, 'hotLine', p.hotLine) + '</td>' +
@@ -371,6 +398,11 @@
     $('modeLabel').textContent = state.merged ? '归并' : '拆分';
     $('modeLabel').className = state.merged ? 'mode-toggle on' : 'mode-toggle';
     $('modeLabel').setAttribute('aria-pressed', state.merged ? 'true' : 'false');
+    var sortMode = ms().order.sortMode === 'desc' ? 'desc' : 'fixed';
+    $('sortModeLabel').textContent = sortMode === 'desc' ? '降序' : '固定';
+    $('sortModeLabel').className = 'mode-toggle sort-toggle' + (sortMode === 'desc' ? ' on' : '');
+    $('sortModeLabel').setAttribute('aria-pressed', sortMode === 'desc' ? 'true' : 'false');
+    $('sortModeLabel').title = '点击切换渠道排序（固定 / 降序）；手动拖动后再次点击可恢复规则排序';
     $('btnExport').disabled = !state.records.length;
   }
   function render() {
@@ -480,6 +512,13 @@
       el.setAttribute('aria-checked', effOn ? 'true' : 'false');
     }
   }
+  function rerenderOrdinaryAfterSelection() {
+    if (state.merged || !state.ordinaryEvolved) return false;
+    invalidateOrdinary();
+    wmsClearWaveHistory();
+    render();
+    return true;
+  }
   /* 与类型全选框同模式：纯切换，无渠道联动；若某渠道全部分段被否掉，该渠道自动否掉 */
   function toggleSeg(key) {
     var m = ms();
@@ -487,6 +526,7 @@
     else m.sel.segs.add(key);
     refreshSegLine(key);
     autoDisableChannel(segParts(key).chId);
+    if (rerenderOrdinaryAfterSelection()) return;
     updateMarksInPlace();
   }
   /* 渠道开关：点击开启 → 点亮渠道并选中其全部分段；点击关闭 → 只关渠道（分段状态保留） */
@@ -506,6 +546,7 @@
     if (ch2) {
       ch2.segments.forEach(function (s) { refreshSegLine(id + '|' + s.name); });
     }
+    if (rerenderOrdinaryAfterSelection()) return;
     updateMarksInPlace();
   }
   /* 渠道全部分段被否掉时，渠道自动转为否掉 */
@@ -546,6 +587,7 @@
     Array.prototype.forEach.call(document.querySelectorAll('#dash .seg-line[data-seg]'), function (el) {
       refreshSegLine(el.dataset.seg);
     });
+    if (rerenderOrdinaryAfterSelection()) return;
     updateMarksInPlace();
   }
   function toggleAllType(t) {
@@ -565,15 +607,16 @@
     var chIds = new Set();
     keys.forEach(function (k) { chIds.add(k.slice(0, k.indexOf('|'))); });
     chIds.forEach(autoDisableChannel);
+    if (rerenderOrdinaryAfterSelection()) return;
     updateMarksInPlace();
   }
   function toggleMerge() {
     state.merged = !state.merged;
     if (state.merged) {
-      /* 归并后默认三个归并渠道（CBT/CBS/普通）全部已选 */
+      /* 归并后仅默认选中有订单的渠道；零订单渠道保持关闭。 */
       var m = state.modes.merged;
       var a = getAnalysis('merged');
-      m.sel.channels = new Set(a.channels.map(function (c) { return c.id; }));
+      m.sel.channels = new Set(a.channels.filter(channelEnabledByDefault).map(function (c) { return c.id; }));
       m.sel.seenChannels = new Set(m.sel.channels);
       m.sel.segs = new Set();
       a.channels.forEach(function (ch) {
@@ -583,6 +626,51 @@
       });
       m.sel.seenSegs = new Set(m.sel.segs);
     }
+    render();
+  }
+  function clearOrdinarySegSelection(m) {
+    Array.from(m.sel.segs).forEach(function (key) {
+      if (key.indexOf('普通|') === 0) m.sel.segs.delete(key);
+    });
+    Array.from(m.sel.seenSegs).forEach(function (key) {
+      if (key.indexOf('普通|') === 0) m.sel.seenSegs.delete(key);
+    });
+  }
+  function toggleOrdinaryEvolution() {
+    if (state.merged) return;
+    var m = state.modes.normal;
+    var current = getAnalysis('normal');
+    var ids = orderedChannels(current, m.order).map(function (ch) { return ch.id; });
+    clearOrdinarySegSelection(m);
+    if (!state.ordinaryEvolved) {
+      state.ordinaryEvolved = true;
+      ids = ids.map(function (id) { return id === '未识别' ? '普通' : id; });
+      if (ids.indexOf('普通') < 0) ids.push('普通');
+      m.sel.channels.delete('未识别');
+      m.sel.channels.add('普通');
+      m.sel.seenChannels.delete('未识别');
+      m.sel.seenChannels.add('普通');
+    } else {
+      state.ordinaryEvolved = false;
+      ids = ids.filter(function (id) { return id !== '普通' && id !== '未识别'; });
+      ids.push('未识别');
+      m.sel.channels.delete('普通');
+      m.sel.channels.delete('未识别');
+      m.sel.seenChannels.delete('普通');
+      m.sel.seenChannels.add('未识别');
+    }
+    m.order.custom = true;
+    m.order.list = ids;
+    invalidateOrdinary();
+    wmsClearWaveHistory();
+    chnPress = { el: null, x: 0, y: 0, moved: false };
+    render();
+  }
+  function toggleSortMode() {
+    var order = ms().order;
+    order.sortMode = order.sortMode === 'desc' ? 'fixed' : 'desc';
+    order.custom = false;
+    order.list = [];
     render();
   }
   function applyManualOrder(ids) {
@@ -595,12 +683,40 @@
   /* ---------- 拖动排序 ---------- */
   var dragState = { row: null };
   var chnPress = { el: null, x: 0, y: 0, moved: false };
+  var evolutionHold = { timer: null, el: null, pointerId: null, x: 0, y: 0 };
+  var suppressChannelClickUntil = 0;
+  function isEvolutionTarget(el) {
+    if (!el || state.merged) return false;
+    return (!state.ordinaryEvolved && el.dataset.ch === '未识别') ||
+      (state.ordinaryEvolved && el.dataset.ch === '普通');
+  }
+  function cancelEvolutionHold() {
+    if (evolutionHold.timer) clearTimeout(evolutionHold.timer);
+    if (evolutionHold.el) evolutionHold.el.classList.remove('evolution-hold');
+    evolutionHold = { timer: null, el: null, pointerId: null, x: 0, y: 0 };
+  }
+  function beginEvolutionHold(el, e) {
+    cancelEvolutionHold();
+    if (!isEvolutionTarget(el)) return;
+    evolutionHold.el = el;
+    evolutionHold.pointerId = e.pointerId;
+    evolutionHold.x = e.clientX;
+    evolutionHold.y = e.clientY;
+    el.classList.add('evolution-hold');
+    evolutionHold.timer = setTimeout(function () {
+      if (!evolutionHold.el || !isEvolutionTarget(evolutionHold.el)) return;
+      suppressChannelClickUntil = Date.now() + 900;
+      cancelEvolutionHold();
+      toggleOrdinaryEvolution();
+    }, 3000);
+  }
   function clearDropMarks() {
     Array.prototype.forEach.call(document.querySelectorAll('#dash .prow'), function (r) {
       r.classList.remove('drop-before', 'drop-after');
     });
   }
   function endDrag() {
+    cancelEvolutionHold();
     if (dragState.row) dragState.row.classList.remove('dragging');
     clearDropMarks();
     dragState.row = null;
@@ -617,6 +733,7 @@
 
     /* 渠道模式切换：拆分 / 归并 */
     $('modeLabel').addEventListener('click', toggleMerge);
+    $('sortModeLabel').addEventListener('click', toggleSortMode);
 
     /* 页面配置：齿轮按钮 + 配置面板（主题，列表固定向下弹出；字体固定为 Sarasa Mono SC） */
     function applyTheme(v) {
@@ -675,7 +792,7 @@
       else wmsSubmit(wms.mode);
     });
     $('browserModeVal').addEventListener('click', wmsToggleBrowserMode);
-    ['modeLabel', 'browserModeVal'].forEach(function (id) {
+    ['modeLabel', 'sortModeLabel', 'browserModeVal'].forEach(function (id) {
       $(id).addEventListener('keydown', function (e) {
         if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); this.click(); }
       });
@@ -686,6 +803,20 @@
       .then(wmsSetAvailable)
       .catch(function () { wmsSetAvailable(false); });
 
+    /* 拆分模式特殊渠道：按住 3 秒且不移动，在「未识别 / 普通」之间切换。 */
+    $('out').addEventListener('pointerdown', function (e) {
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      var chn = e.target.closest ? e.target.closest('.chn[data-ch]') : null;
+      if (chn) beginEvolutionHold(chn, e);
+    });
+    document.addEventListener('pointermove', function (e) {
+      if (!evolutionHold.el || e.pointerId !== evolutionHold.pointerId) return;
+      var dx = e.clientX - evolutionHold.x, dy = e.clientY - evolutionHold.y;
+      if (dx * dx + dy * dy > 25) cancelEvolutionHold();
+    });
+    document.addEventListener('pointerup', cancelEvolutionHold);
+    document.addEventListener('pointercancel', cancelEvolutionHold);
+
     /* 点击交互（委托） */
     $('out').addEventListener('click', function (e) {
       var t = e.target;
@@ -693,6 +824,10 @@
       if (segEl) { toggleSeg(segEl.dataset.seg); return; }
       var chnEl = t.closest ? t.closest('.chn[data-ch]') : null;
       if (chnEl) {
+        if (Date.now() < suppressChannelClickUntil) {
+          chnPress = { el: null, x: 0, y: 0, moved: false };
+          return;
+        }
         /* 点击切换：按下→松开且位移小于阈值才切换；拖动（有位移）不切换；
            无按下记录（键盘/程序触发）也视为点击 */
         var real = chnPress.el === chnEl;
@@ -751,6 +886,7 @@
     $('out').addEventListener('dragstart', function (e) {
       var chn = e.target.closest ? e.target.closest('.chn') : null;
       if (!chn) { e.preventDefault(); return; }
+      cancelEvolutionHold();
       dragState.row = chn;
       chn.classList.add('dragging');
       e.dataTransfer.effectAllowed = 'move';

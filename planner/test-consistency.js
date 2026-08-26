@@ -382,6 +382,96 @@ for (let f = 0; f < 24; f++) {
 }
 console.log('✔ 随机勾选模糊测试完成：24 组');
 
+/* ---------- 渠道默认启用规则 ---------- */
+{
+  check(C.channelEnabledByDefault({ id: 'CBT', total: 12 }) === true,
+    '有订单的已识别渠道应默认开启');
+  check(C.channelEnabledByDefault({ id: 'CBT', total: 0 }) === false,
+    '零订单渠道应默认关闭');
+  check(C.channelEnabledByDefault({ id: '未识别', total: 12 }) === false,
+    '未识别渠道即使有订单也应默认关闭');
+  console.log('✔ 零订单渠道与未识别渠道默认关闭');
+}
+
+/* ---------- 渠道固定 / 降序排序 ---------- */
+{
+  const source = [
+    ['CBT', 100], ['UniUni', 0], ['YanWen', 80], ['USPS', 70], ['SwiftX', 60],
+    ['SpeedX', 50], ['Gofo', 40], ['CBS', 30], ['UPS', 200], ['Fedex', 0],
+    ['BFE', 10], ['未识别', 999]
+  ].map(([id, total]) => ({ id, total }));
+  const fixed = C.sortChannelsForDisplay(source.slice(), 'normal', 'fixed').map(c => c.id);
+  check(JSON.stringify(fixed) === JSON.stringify([
+    'CBT', 'YanWen', 'USPS', 'SwiftX', 'SpeedX', 'Gofo', 'CBS',
+    'UPS', 'BFE', 'UniUni', 'Fedex', '未识别'
+  ]), `普通模式固定排序不符：${fixed.join(',')}`);
+
+  const desc = C.sortChannelsForDisplay(source.slice(), 'normal', 'desc').map(c => c.id);
+  check(desc[0] === 'UPS' && desc[desc.length - 1] === '未识别',
+    `降序模式应沿用订单量降序且未识别置底：${desc.join(',')}`);
+
+  const mergedSource = [['CBT', 0], ['CBS', 30], ['普通', 100]].map(([id, total]) => ({ id, total }));
+  const mergedFixed = C.sortChannelsForDisplay(mergedSource, 'merged', 'fixed').map(c => c.id);
+  check(JSON.stringify(mergedFixed) === JSON.stringify(['普通', 'CBS', 'CBT']),
+    `归并固定排序及零订单沉底不符：${mergedFixed.join(',')}`);
+  console.log('✔ 渠道固定 / 降序排序、零订单沉底、未识别置底');
+}
+
+/* ---------- 未识别进化为普通：吸收与退化可逆 ---------- */
+{
+  const base = C.analyze(records, qtyMap, 'normal', () => ({ ...C.DEFAULT_UNIFIED }));
+  const sel = selectAll(base);
+  const sourceCh = base.channels.find(ch => !['CBT', 'CBS', '未识别'].includes(ch.id) && ch.segments.length > 0);
+  const cbt = base.channels.find(ch => ch.id === 'CBT' && ch.segments.length > 0);
+  check(Boolean(sourceCh && cbt), '样本应包含可吸收渠道与 CBT 分段');
+  if (sourceCh && cbt) {
+    const sourceSeg = sourceCh.segments[0];
+    const cbtSeg = cbt.segments[0];
+    sel.segSelected.delete(sourceCh.id + '|' + sourceSeg.name);
+    sel.segSelected.delete('CBT|' + cbtSeg.name);
+    const absorbed = C.collectOrdinaryAbsorbedOrderNos(base, sel.channelSelected, sel.segSelected);
+    check(sourceSeg.orderNos.every(orderNo => absorbed.has(orderNo)), '普通应吸收非 CBT/CBS 的关闭分段');
+    check(cbtSeg.orderNos.every(orderNo => !absorbed.has(orderNo)), '普通不得吸收 CBT 的关闭分段');
+
+    const evolved = C.buildOrdinaryEvolvedAnalysis(
+      base, records, qtyMap, () => ({ ...C.DEFAULT_UNIFIED }), sel.channelSelected, sel.segSelected
+    );
+    const originalUnknown = base.channels.find(ch => ch.id === '未识别');
+    const ordinary = evolved.channels.find(ch => ch.id === '普通');
+    check(!evolved.channels.some(ch => ch.id === '未识别'), '进化后表格不应同时保留未识别渠道');
+    check(Boolean(ordinary), '进化后应生成普通渠道');
+    if (ordinary && originalUnknown) {
+      check(ordinary.total === originalUnknown.total + sourceSeg.orderCount,
+        `普通订单数应为原未识别加吸收订单：${ordinary.total}`);
+      const evolvedChannels = new Set(sel.channelSelected);
+      evolvedChannels.delete('未识别');
+      evolvedChannels.add('普通');
+      const evolvedSegs = new Set(sel.segSelected);
+      ordinary.segments.forEach(seg => evolvedSegs.add('普通|' + seg.name));
+      const owners = new Map();
+      let duplicate = false;
+      evolved.channels.forEach(ch => {
+        if (!evolvedChannels.has(ch.id)) return;
+        ch.segments.forEach(seg => {
+          if (!evolvedSegs.has(ch.id + '|' + seg.name)) return;
+          seg.orderNos.forEach(orderNo => {
+            if (owners.has(orderNo)) duplicate = true;
+            owners.set(orderNo, ch.id + '|' + seg.name);
+          });
+        });
+      });
+      check(!duplicate, '吸收后有效分段之间不应出现重复订单');
+      check(owners.size === records.length - cbtSeg.orderCount,
+        '吸收后有效订单应仅排除未被普通吸收的 CBT 关闭分段');
+    }
+    check(evolved.channels.find(ch => ch.id === sourceCh.id).total === sourceCh.total,
+      '被吸收渠道应保留原分段作为可逆开关');
+    check(base.channels.some(ch => ch.id === '未识别') && !base.channels.some(ch => ch.id === '普通'),
+      '退化使用基础分析时应只恢复未识别并吐出吸收订单');
+  }
+  console.log('✔ 未识别 / 普通进退化及非 CBT/CBS 关闭分段吸收');
+}
+
 /* ---------- 活跃 SKU：按有效订单的全部 SKU 去重 ---------- */
 {
   const a = {
