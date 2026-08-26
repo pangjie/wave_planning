@@ -295,6 +295,48 @@ console.log('✔ 三层导出过滤行为正确');
   const am2 = C.analyze(records, qtyMap, 'merged', (id) => ({ hotLine: 7, capacity: 300, multiSegs: 2, mixSegs: 3, absorb: 2 }));
   assert(am2.channels.every(c => c.params.hotLine === 7 && c.params.capacity === 300), '解析器参数应生效');
   console.log('✔ 参数解析器（统一参数回退）');
+
+  /* ---- 爆品单SKU超700拆分 ---- */
+  const mkHot = (n, skuCount) => {
+    const orderNos = Array.from({ length: n }, (_, i) => 'O' + i);
+    const pool = Array.from({ length: skuCount }, (_, i) => ({ sku: 'SKU' + i, count: Math.ceil(n / skuCount) }));
+    return { kind: 'hot', name: 'x', orderNos, orderCount: n, pickQty: n, skuPool: pool, skuCount };
+  };
+  const names = segs => segs.map(s => s.name + '(' + s.orderCount + ')').join(',');
+  const flat = segs => segs.flatMap(s => s.orderNos);
+  const qm = {};
+  for (let i = 0; i < 1600; i++) qm['O' + i] = 1;
+
+  // 800 单 单SKU → 2 段（400/400），每段 ≤700
+  let hs = C.splitOversizedHotSegments([mkHot(800, 1)], qm);
+  assert(names(hs) === '爆品1(400),爆品2(400)', '800单应拆成 400/400: ' + names(hs));
+  assert(new Set(flat(hs)).size === 800, '拆分后订单不重不漏');
+
+  // 1500 单 → 3 段（500/500/500）
+  hs = C.splitOversizedHotSegments([mkHot(1500, 1)], qm);
+  assert(names(hs) === '爆品1(500),爆品2(500),爆品3(500)', '1500单应拆成 3×500: ' + names(hs));
+
+  // 1401 单 → 3 段（467/467/467）
+  hs = C.splitOversizedHotSegments([mkHot(1401, 1)], qm);
+  assert(names(hs) === '爆品1(467),爆品2(467),爆品3(467)', '1401单应拆成 3×467: ' + names(hs));
+  assert(new Set(flat(hs)).size === 1401, '拆分后订单不重不漏');
+
+  // 700 单 → 不拆；600 单（容量500场景）→ 不拆
+  hs = C.splitOversizedHotSegments([mkHot(700, 1)], qm);
+  assert(names(hs) === '爆品1(700)', '700单不应拆: ' + names(hs));
+  hs = C.splitOversizedHotSegments([mkHot(600, 1)], qm);
+  assert(names(hs) === '爆品1(600)', '600单（容量500）不应拆: ' + names(hs));
+
+  // 800 单 但多SKU → 不拆
+  const multi = mkHot(800, 2);
+  hs = C.splitOversizedHotSegments([multi], qm);
+  assert(hs.length === 1 && hs[0].orderCount === 800 && hs[0].skuCount === 2, '多SKU爆品段不应拆');
+
+  // 混合序列重编号连续：600 / 800 / 500 → 爆品1(600), 爆品2(400), 爆品3(400), 爆品4(500)
+  hs = C.splitOversizedHotSegments([mkHot(600, 1), mkHot(800, 1), mkHot(500, 1)], qm);
+  assert(names(hs) === '爆品1(600),爆品2(400),爆品3(400),爆品4(500)', '混合序列编号应连续: ' + names(hs));
+  assert(hs.every(s => s.orderCount <= 700), '拆分后每段都应 ≤700');
+  console.log('✔ 爆品单SKU超700拆分（600/700/800/1401/1500/多SKU/混合编号）');
 })();
 
 console.log('\n全部核心测试通过 ✅');

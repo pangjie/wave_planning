@@ -392,6 +392,8 @@ function segDisplayName(name) {
   return String(name).replace(/-\d+$/, '').replace(/\d+$/, '');
 }
 var DEFAULT_UNIFIED = { hotLine: 10, capacity: 400, multiSegs: 1, mixSegs: 1, absorb: 1 };
+/* 爆品单SKU分段超过多项搜索单次上限（700 行）时按订单数均分拆分；与波次容量设置无关 */
+var HOT_SINGLE_SKU_SPLIT_LIMIT = 700;
 var CHANNEL_COLORS = {
   'CBT': 'E9E4F8', 'CBS': 'E2F2E1', 'SwiftX': 'DCE9FA', 'SpeedX': 'FCE9DC',
   'YanWen': 'DDF0ED', 'Gofo': 'DCF0F4', 'UPS': 'E5E7F8', 'USPS': 'E6F4E6',
@@ -689,6 +691,31 @@ function segFromItems(kind, prefix, parts, qtyMap) {
   return out;
 }
 
+/* 爆品分段后处理：仅当分段只有一个 SKU 且订单数超过多项搜索单次上限（700）时，
+   把订单列表均分成若干体量相当、每段 ≤700 单的分段（单SKU爆品段在容量分段中
+   是原子单位，不会因容量拆分，故这里单独处理；多SKU分段保持不动）。
+   全部爆品分段按顺序重新编号，保证分段名连续。 */
+function splitOversizedHotSegments(hotSegs, qtyMap) {
+  var out = [];
+  var segNo = 0;
+  for (var i = 0; i < hotSegs.length; i++) {
+    var seg = hotSegs[i];
+    var k = (seg.skuCount === 1 && seg.orderCount > HOT_SINGLE_SKU_SPLIT_LIMIT)
+      ? Math.ceil(seg.orderCount / HOT_SINGLE_SKU_SPLIT_LIMIT) : 1;
+    var base = Math.floor(seg.orderCount / k);
+    var rem = seg.orderCount % k;
+    var pos = 0;
+    for (var c = 0; c < k; c++) {
+      var size = base + (c < rem ? 1 : 0);
+      var chunk = seg.orderNos.slice(pos, pos + size);
+      pos += size;
+      segNo++;
+      out.push(finalizeSeg('hot', '爆品' + segNo, chunk, seg.skuPool, qtyMap));
+    }
+  }
+  return out;
+}
+
 function slotsToMixSegs(slots, qtyMap) {
   var out = [];
   for (var i = 0; i < slots.length; i++) {
@@ -757,7 +784,10 @@ function analyzeChannel(id, records, qtyMap, p) {
   paperSeq.forEach(function (g) { paperOrderCount += g.count; });
 
   /* 爆品 / 单件paper 容量分段 */
-  var hotSegs = segFromItems('hot', '爆品', partitionByCapacity(hotSeq, p.capacity), qtyMap);
+  var hotSegs = splitOversizedHotSegments(
+    segFromItems('hot', '爆品', partitionByCapacity(hotSeq, p.capacity), qtyMap),
+    qtyMap
+  );
   var paperSegs = segFromItems('paper', '单件paper-', partitionByCapacity(paperSeq, p.capacity), qtyMap);
 
   /* 原始混件组件与离散分段 */
@@ -1660,6 +1690,8 @@ if (typeof module !== 'undefined' && module.exports) {
     buildRecords: buildRecords, trackingChannel: trackingChannel,
     linearPartition: linearPartition, analyzeChannel: analyzeChannel,
     analyze: analyze, buildExport: buildExport, buildXlsxBuffer: buildXlsxBuffer,
+    splitOversizedHotSegments: splitOversizedHotSegments,
+    HOT_SINGLE_SKU_SPLIT_LIMIT: HOT_SINGLE_SKU_SPLIT_LIMIT,
     DEFAULT_UNIFIED: DEFAULT_UNIFIED,
     /* 测试与界面共用的展示映射（避免多份拷贝） */
     ABSORB_NAMES: ABSORB_NAMES, TYPE_LABEL: TYPE_LABEL,
