@@ -361,7 +361,7 @@
     var head = '<tr>' +
       '<th class="left">' + togHtml(chMasterState(), 'data-master="ch"', '点击全选/取消全部渠道') +
       '<span class="type-tog" data-master="ch">渠道</span></th>' +
-      '<th>有效订单</th>' +
+      '<th>激活订单</th>' +
       '<th>容量</th>' +
       '<th>爆品</th>' +
       '<th>多件</th>' +
