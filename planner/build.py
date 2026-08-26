@@ -30,7 +30,6 @@ html = (
 
 with open(OUT, "w", encoding="utf-8") as f:
     f.write(html)
-
 if os.path.isdir(WMS_DIST):
     with open(os.path.join(WMS_DIST, "index.html"), "w", encoding="utf-8") as f:
         f.write(html)

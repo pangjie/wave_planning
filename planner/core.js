@@ -629,6 +629,43 @@ function analyze(records, qtyMap, mode, paramsFor) {
   return { mode: mode, channels: chans, totals: totals, waveStats: waveStats, classSeq: buildClassSeq(records) };
 }
 
+/* ---------- 当前选择下的有效订单统计 ---------- */
+function selectedOrderCountForChannel(ch, channelSelected, segSelected) {
+  if (!ch || !channelSelected.has(ch.id)) return 0;
+  return ch.segments.reduce(function (sum, seg) {
+    return sum + (segSelected.has(ch.id + '|' + seg.name) ? seg.orderCount : 0);
+  }, 0);
+}
+function selectedOrderCount(analysis, channelSelected, segSelected) {
+  return analysis.channels.reduce(function (sum, ch) {
+    return sum + selectedOrderCountForChannel(ch, channelSelected, segSelected);
+  }, 0);
+}
+function selectedSkuCount(analysis, records, channelSelected, segSelected) {
+  var orderNos = new Set();
+  analysis.channels.forEach(function (ch) {
+    if (!channelSelected.has(ch.id)) return;
+    ch.segments.forEach(function (seg) {
+      if (!segSelected.has(ch.id + '|' + seg.name)) return;
+      seg.orderNos.forEach(function (orderNo) { orderNos.add(orderNo); });
+    });
+  });
+  var skus = new Set();
+  records.forEach(function (record) {
+    if (!orderNos.has(record.orderNo)) return;
+    (record.skus || []).forEach(function (sku) {
+      sku = String(sku == null ? '' : sku).trim();
+      if (sku !== '') skus.add(sku);
+    });
+  });
+  return skus.size;
+}
+function residentChannels(analysis) {
+  return analysis.channels.filter(function (ch) {
+    return analysis.mode !== 'normal' || ch.id !== '未识别';
+  });
+}
+
 /* =============================================================
  * 13. 导出：8 个工作表
  * ============================================================= */
@@ -1334,6 +1371,10 @@ if (typeof module !== 'undefined' && module.exports) {
     buildRecords: buildRecords, trackingChannel: trackingChannel,
     linearPartition: linearPartition, analyzeChannel: analyzeChannel,
     analyze: analyze, buildExport: buildExport, buildXlsxBuffer: buildXlsxBuffer,
+    selectedOrderCountForChannel: selectedOrderCountForChannel,
+    selectedOrderCount: selectedOrderCount,
+    selectedSkuCount: selectedSkuCount,
+    residentChannels: residentChannels,
     splitOversizedHotSegments: splitOversizedHotSegments,
     HOT_SINGLE_SKU_SPLIT_LIMIT: HOT_SINGLE_SKU_SPLIT_LIMIT,
     DEFAULT_UNIFIED: DEFAULT_UNIFIED,

@@ -382,6 +382,74 @@ for (let f = 0; f < 24; f++) {
 }
 console.log('✔ 随机勾选模糊测试完成：24 组');
 
+/* ---------- 活跃 SKU：按有效订单的全部 SKU 去重 ---------- */
+{
+  const a = {
+    mode: 'normal',
+    channels: [{
+      id: '测试渠道',
+      segments: [
+        { name: '混件1', orderNos: ['O1', 'O2'] },
+        { name: '单件1', orderNos: ['O3'] }
+      ]
+    }]
+  };
+  const rs = [
+    { orderNo: 'O1', skus: ['SKU-A', 'SKU-B'] },
+    { orderNo: 'O2', skus: ['SKU-A', 'SKU-C', ''] },
+    { orderNo: 'O3', skus: ['SKU-C', 'SKU-D'] },
+    { orderNo: 'O4', skus: ['SKU-X'] }
+  ];
+  const channelSelected = new Set(['测试渠道']);
+  const segSelected = new Set(['测试渠道|混件1', '测试渠道|单件1']);
+  check(C.selectedSkuCount(a, rs, channelSelected, segSelected) === 4,
+    '活跃 SKU 应包含混件的全部 SKU，并跨订单去重');
+  segSelected.delete('测试渠道|混件1');
+  check(C.selectedSkuCount(a, rs, channelSelected, segSelected) === 2,
+    '关闭混件分段后，活跃 SKU 应只统计剩余有效订单');
+  channelSelected.clear();
+  check(C.selectedSkuCount(a, rs, channelSelected, segSelected) === 0,
+    '关闭渠道后，活跃 SKU 应归零');
+  console.log('✔ 活跃 SKU 按有效订单全 SKU 去重并实时联动');
+}
+
+/* ---------- 常驻渠道统计口径 ---------- */
+{
+  const normal = C.analyze(records, qtyMap, 'normal', () => ({ ...C.DEFAULT_UNIFIED }));
+  const merged = C.analyze(records, qtyMap, 'merged', () => ({ ...C.DEFAULT_UNIFIED }));
+  const normalResident = C.residentChannels(normal);
+  const mergedResident = C.residentChannels(merged);
+  check(normalResident.length === 11, `普通模式常驻渠道应为 11，实际 ${normalResident.length}`);
+  check(!normalResident.some(ch => ch.id === '未识别'), '未识别不应计入常驻渠道');
+  check(mergedResident.length === 3, `归并模式渠道应为 3，实际 ${mergedResident.length}`);
+  console.log('✔ 活跃渠道按常驻渠道统计（普通 11 / 归并 3）');
+}
+
+/* ---------- 分段开关实时统计口径 ---------- */
+{
+  const a = C.analyze(records, qtyMap, 'normal', () => ({ ...C.DEFAULT_UNIFIED }));
+  const sel = selectAll(a);
+  check(C.selectedOrderCount(a, sel.channelSelected, sel.segSelected) === records.length,
+    '全选时有效订单合计应等于原始订单总数');
+
+  const ch = a.channels.find(c => c.segments.length >= 2);
+  check(Boolean(ch), '样本中应至少存在一个包含多个分段的渠道');
+  if (ch) {
+    const removed = ch.segments[0];
+    const beforeChannel = C.selectedOrderCountForChannel(ch, sel.channelSelected, sel.segSelected);
+    const beforeTotal = C.selectedOrderCount(a, sel.channelSelected, sel.segSelected);
+    sel.segSelected.delete(ch.id + '|' + removed.name);
+    check(C.selectedOrderCountForChannel(ch, sel.channelSelected, sel.segSelected) === beforeChannel - removed.orderCount,
+      '关闭单个分段后，所属渠道有效订单数应同步减少');
+    check(C.selectedOrderCount(a, sel.channelSelected, sel.segSelected) === beforeTotal - removed.orderCount,
+      '关闭单个分段后，有效订单总量应同步减少');
+    sel.channelSelected.delete(ch.id);
+    check(C.selectedOrderCountForChannel(ch, sel.channelSelected, sel.segSelected) === 0,
+      '关闭渠道后，该渠道有效订单数应归零');
+  }
+  console.log('✔ 分段开关联动渠道订单数与有效订单总量');
+}
+
 /* ---------- 渠道顺序进入导出 ---------- */
 {
   const p = { ...C.DEFAULT_UNIFIED };

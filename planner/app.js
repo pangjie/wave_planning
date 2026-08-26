@@ -1,7 +1,7 @@
 /* =============================================================
- * 波次规划工具 · 终端风格界面（纯点击操作）
- * 业务逻辑（core.js）与桌面版完全一致；页面无命令行输入、无操作日志，
- * 所有交互就地更新，不扰动页面结构。
+ * 波次规划工具界面
+ * 业务逻辑（core.js）与桌面版完全一致；概览、矩阵与任务状态实时联动，
+ * 高频交互优先就地更新，避免扰动页面结构。
  * ============================================================= */
 (function () {
   'use strict';
@@ -194,7 +194,9 @@
   }
   function togHtml(state, dataAttr, title) {
     var glyph = state === 'on' ? '[x]' : (state === 'some' ? '[~]' : '[ ]');
-    return '<span class="tog ' + state + '" ' + dataAttr + ' title="' + esc(title) + '">' + glyph + '</span>';
+    var checked = state === 'some' ? 'mixed' : (state === 'on' ? 'true' : 'false');
+    return '<span class="tog ' + state + '" ' + dataAttr + ' role="checkbox" tabindex="0" aria-checked="' + checked +
+      '" title="' + esc(title) + '">' + glyph + '</span>';
   }
   /* 页面显示名（仅影响显示，不影响逻辑与导出） */
   var UI_ABSORB_NAMES = { 1: '关闭', 2: '吸收', 3: '多件', 4: '全量' };
@@ -242,16 +244,17 @@
     return st;
   }
   function paramCell(chId, p, val) {
-    if (p === 'capacity') val = (val / 100) + 'H';
     var atMin = val <= minOf(p);
-    return '<span class="arr arr-l' + (atMin ? ' limit' : '') + '" data-ch="' + esc(chId || '') + '" data-p="' + p +
-      '" data-dir="-1" title="-' + stepOf(p) + '">◀</span>' +
-      '<span class="pval">' + val + '</span>' +
+    var shown = p === 'capacity' ? (val / 100) + 'H' : val;
+    return '<span class="stepper">' +
+      '<span class="arr arr-l' + (atMin ? ' limit' : '') + '" data-ch="' + esc(chId || '') + '" data-p="' + p +
+      '" data-dir="-1" role="button" tabindex="0" title="减少 ' + stepOf(p) + '">◀</span>' +
+      '<span class="pval">' + shown + '</span>' +
       '<span class="arr arr-r" data-ch="' + esc(chId || '') + '" data-p="' + p +
-      '" data-dir="1" title="+' + stepOf(p) + '">▶</span>';
+      '" data-dir="1" role="button" tabindex="0" title="增加 ' + stepOf(p) + '">▶</span></span>';
   }
   function absorbCell(chId, val) {
-    return '<span class="aval" data-ch="' + esc(chId || '') + '" title="单击切换档位（关闭 → 吸收 → 多件 → 全量）">' +
+    return '<span class="aval" data-ch="' + esc(chId || '') + '" role="button" tabindex="0" title="单击切换档位（关闭 → 吸收 → 多件 → 全量）">' +
       UI_ABSORB_NAMES[val] + '</span>';
   }
   function segLineHtml(ch, s) {
@@ -259,7 +262,8 @@
     var effOn = segEffectiveOn(ch.id, s.name);
     var label = uiSegName(s.name) + '·' + s.orderCount + '·' + s.skuCount;
     return '<div class="seg-line ' + (effOn ? 'on' : 'off') + (state.waveNos.has(key) && effOn ? ' waved' : '') + '" data-seg="' + esc(key) +
-      '" title="' + esc(s.name) + '（点击切换导出勾选）"><span class="seg-name">' + esc(label) + '</span></div>';
+      '" role="checkbox" tabindex="0" aria-checked="' + (effOn ? 'true' : 'false') + '" title="' + esc(s.name) +
+      '（点击切换导出勾选）"><span class="seg-name">' + esc(label) + '</span></div>';
   }
   function typeHeadHtml(t) {
     var state = typeMasterState(t);
@@ -268,9 +272,11 @@
   }
   function effectiveOrderSum() {
     var m = ms();
-    var sum = 0;
-    curAnalysis().channels.forEach(function (c) { if (m.sel.channels.has(c.id)) sum += c.total; });
-    return sum;
+    return selectedOrderCount(curAnalysis(), m.sel.channels, m.sel.segs);
+  }
+  function effectiveChannelOrderSum(ch) {
+    var m = ms();
+    return selectedOrderCountForChannel(ch, m.sel.channels, m.sel.segs);
   }
   function segTdHtml(ch, t) {
     var html = '';
@@ -285,11 +291,16 @@
     var u = m.unified;
     var st = effectiveSegStats();
 
+    var activeChans = residentChannels(Object.assign({}, a, { channels: chans }));
+    var selectedChans = activeChans.filter(function (ch) { return m.sel.channels.has(ch.id); }).length;
+    var selectedWaves = TYPE_ORDER.reduce(function (n, t) { return n + st[t].waves; }, 0);
+    var selectedOrders = effectiveOrderSum();
+    var selectedSkus = selectedSkuCount(a, state.records, m.sel.channels, m.sel.segs);
     var rows = '';
     /* 统一行 */
     rows += '<tr class="urowe">' +
       '<td><span class="dim">统一调整</span></td>' +
-      '<td class="num">' + effectiveOrderSum() + '</td>' +
+      '<td class="num" data-order-total>' + selectedOrders + '</td>' +
       '<td>' + paramCell('', 'capacity', u.capacity) + '</td>' +
       '<td>' + paramCell('', 'hotLine', u.hotLine) + '</td>' +
       '<td>' + paramCell('', 'multiSegs', u.multiSegs) + '</td>' +
@@ -305,9 +316,10 @@
       var p = m.per.get(ch.id) || m.unified;
       rows += '<tr class="prow' + (m.sel.channels.has(ch.id) ? '' : ' off') + '" data-ch="' + esc(ch.id) + '">' +
         '<td class="left"><div class="ch-cell">' +
-        '<span class="chn" tabindex="0" draggable="true" data-ch="' + esc(ch.id) + '" style="--chc:' + tagColor(ch.id) +
+        '<span class="chn" role="button" aria-pressed="' + (m.sel.channels.has(ch.id) ? 'true' : 'false') +
+        '" tabindex="0" draggable="true" data-ch="' + esc(ch.id) + '" style="--chc:' + tagColor(ch.id) +
         '" title="点击切换渠道勾选 · 拖动排序 · 聚焦后 Alt+↑↓">' + esc(ch.id) + '</span></div></td>' +
-        '<td class="num">' + ch.total + '</td>' +
+        '<td class="num" data-channel-orders>' + effectiveChannelOrderSum(ch) + '</td>' +
         '<td>' + paramCell(ch.id, 'capacity', p.capacity) + '</td>' +
         '<td>' + paramCell(ch.id, 'hotLine', p.hotLine) + '</td>' +
         '<td>' + paramCell(ch.id, 'multiSegs', p.multiSegs) + '</td>' +
@@ -322,20 +334,29 @@
     var head = '<tr>' +
       '<th class="left">' + togHtml(chMasterState(), 'data-master="ch"', '点击全选/取消全部渠道') +
       '<span class="type-tog" data-master="ch">渠道</span></th>' +
-      '<th>订单</th>' +
+      '<th>有效订单</th>' +
       '<th>容量</th>' +
       '<th>爆品</th>' +
       '<th>多件</th>' +
       '<th>混件</th>' +
       '<th>吸收</th>' +
-      TYPE_ORDER.map(function (t) { return '<th class="left">' + typeHeadHtml(t) + '</th>'; }).join('') +
+      TYPE_ORDER.map(function (t) { return '<th class="type-head">' + typeHeadHtml(t) + '</th>'; }).join('') +
       '</tr>';
 
-    return '<div class="twrap"><table class="pt">' +
-      '<colgroup><col style="width:104px"><col style="width:60px"><col style="width:60px">' +
-      '<col style="width:60px"><col style="width:60px"><col style="width:60px"><col style="width:60px">' +
-      '<col style="width:114px"><col style="width:114px"><col style="width:114px"><col style="width:114px"></colgroup>' +
-      '<thead>' + head + '</thead><tbody>' + rows + '</tbody></table></div>';
+    return '<section class="dash-summary"><div class="summary-title"><strong>规划概览</strong><span>' +
+      (state.merged ? '渠道归并' : '渠道拆分') + '</span></div>' +
+      '<div class="metric-grid">' +
+        '<div class="metric"><small>导入订单</small><strong id="totalOrderMetric">' + state.records.length + '<span>单</span></strong></div>' +
+        '<div class="metric"><small>激活订单</small><strong id="selectedOrderMetric">' + selectedOrders + '<span>单</span></strong></div>' +
+        '<div class="metric"><small>激活波次</small><strong id="selectedWaveMetric">' + selectedWaves + '<span>波</span></strong></div>' +
+        '<div class="metric"><small>活跃SKU</small><strong id="selectedSkuMetric">' + selectedSkus + '<span>个</span></strong></div>' +
+        '<div class="metric"><small>活跃渠道</small><strong id="selectedChannelMetric">' + selectedChans + '<span>/' + activeChans.length + '</span></strong></div>' +
+      '</div></section>' +
+      '<section class="matrix-panel"><div class="twrap"><table class="pt">' +
+      '<colgroup><col style="width:10%"><col style="width:6%"><col style="width:6%">' +
+      '<col style="width:6%"><col style="width:6%"><col style="width:6%"><col style="width:6%">' +
+      '<col style="width:13.5%"><col style="width:13.5%"><col style="width:13.5%"><col style="width:13.5%"></colgroup>' +
+      '<thead>' + head + '</thead><tbody>' + rows + '</tbody></table></div></section>';
   }
 
   /* ---------- 渲染（保持滚动位置，结构稳定；空数据也显示表格骨架） ---------- */
@@ -349,16 +370,23 @@
     $('engineLabelWrap').style.display = ok ? 'none' : '';
     $('modeLabel').textContent = state.merged ? '归并' : '拆分';
     $('modeLabel').className = state.merged ? 'mode-toggle on' : 'mode-toggle';
+    $('modeLabel').setAttribute('aria-pressed', state.merged ? 'true' : 'false');
     $('btnExport').disabled = !state.records.length;
   }
   function render() {
     var out = $('out');
-    var st = out.scrollTop;
+    var oldTable = out.querySelector('.twrap');
+    var tableTop = oldTable ? oldTable.scrollTop : 0;
+    var tableLeft = oldTable ? oldTable.scrollLeft : 0;
     /* 调整参数产生的新分段/新渠道默认选中 */
     if (state.records.length) syncSelection(curAnalysis());
     renderDash();
     renderBar();
-    out.scrollTop = st;
+    var newTable = out.querySelector('.twrap');
+    if (newTable) {
+      newTable.scrollTop = tableTop;
+      newTable.scrollLeft = tableLeft;
+    }
   }
 
   /* ---------- 导出 ---------- */
@@ -392,8 +420,13 @@
    * 交互（就地更新优先，不重渲染）
    * ============================================================= */
   function updateMarksInPlace() {
-    var oc = document.querySelector('#dash .urowe td.num');
+    var oc = document.querySelector('#dash [data-order-total]');
     if (oc) oc.textContent = effectiveOrderSum();
+    Array.prototype.forEach.call(document.querySelectorAll('#dash .prow[data-ch]'), function (row) {
+      var ch = channelById(row.dataset.ch);
+      var count = row.querySelector('[data-channel-orders]');
+      if (ch && count) count.textContent = effectiveChannelOrderSum(ch);
+    });
     var chEl = document.querySelector('#dash .tog[data-master="ch"]');
     if (chEl) setGlyphState(chEl, chMasterState());
     var st = effectiveSegStats();
@@ -403,12 +436,31 @@
       var c = document.querySelector('#dash .type-count[data-t="' + t + '"]');
       if (c) c.innerHTML = '<span class="wc">' + st[t].waves + '波</span>/<span class="oc">' + st[t].orders + '单</span>';
     });
+    var selectedOrderMetric = $('selectedOrderMetric');
+    if (selectedOrderMetric) selectedOrderMetric.innerHTML = effectiveOrderSum() + '<span>单</span>';
+    var selectedWaveMetric = $('selectedWaveMetric');
+    if (selectedWaveMetric) {
+      var waves = TYPE_ORDER.reduce(function (n, t) { return n + st[t].waves; }, 0);
+      selectedWaveMetric.innerHTML = waves + '<span>波</span>';
+    }
+    var selectedSkuMetric = $('selectedSkuMetric');
+    if (selectedSkuMetric) {
+      var m = ms();
+      selectedSkuMetric.innerHTML = selectedSkuCount(curAnalysis(), state.records, m.sel.channels, m.sel.segs) + '<span>个</span>';
+    }
+    var selectedChannelMetric = $('selectedChannelMetric');
+    if (selectedChannelMetric) {
+      var active = residentChannels(curAnalysis());
+      var selected = active.filter(function (ch) { return ms().sel.channels.has(ch.id); }).length;
+      selectedChannelMetric.innerHTML = selected + '<span>/' + active.length + '</span>';
+    }
   }
   function setGlyphState(el, state) {
     el.textContent = state === 'on' ? '[x]' : (state === 'some' ? '[~]' : '[ ]');
     el.classList.toggle('on', state === 'on');
     el.classList.toggle('some', state === 'some');
     el.classList.toggle('off', state === 'off');
+    el.setAttribute('aria-checked', state === 'some' ? 'mixed' : (state === 'on' ? 'true' : 'false'));
   }
   function segElOf(key) {
     return document.querySelector('#dash .seg-line[data-seg="' + CSS.escape(key) + '"]');
@@ -425,6 +477,7 @@
       el.classList.toggle('on', effOn);
       el.classList.toggle('off', !effOn);
       el.classList.toggle('waved', state.waveNos.has(key) && effOn);
+      el.setAttribute('aria-checked', effOn ? 'true' : 'false');
     }
   }
   /* 与类型全选框同模式：纯切换，无渠道联动；若某渠道全部分段被否掉，该渠道自动否掉 */
@@ -463,7 +516,10 @@
     var row = document.querySelector('#dash .prow[data-ch="' + CSS.escape(id) + '"]');
     if (row) row.classList.toggle('off', !ms().sel.channels.has(id));
     var el = document.querySelector('#dash .chn[data-ch="' + CSS.escape(id) + '"]');
-    if (el) el.style.setProperty('--chc', tagColor(id));
+    if (el) {
+      el.style.setProperty('--chc', tagColor(id));
+      el.setAttribute('aria-pressed', ms().sel.channels.has(id) ? 'true' : 'false');
+    }
   }
   function autoDisableChannel(chId) {
     var m = ms();
@@ -567,9 +623,12 @@
       /* 主题只改外观（body 属性 → CSS 变量），不触碰任何页面状态与运行中的任务 */
       if (v) document.body.setAttribute('data-theme', v);
       else document.body.removeAttribute('data-theme');
+      var themeMeta = document.querySelector('meta[name="theme-color"]');
+      if (themeMeta) themeMeta.setAttribute('content', getComputedStyle(document.body).backgroundColor);
     }
     function closeCfgLists() {
       $('themeList').hidden = true;
+      $('themeBtn').setAttribute('aria-expanded', 'false');
     }
     function bindCfgList(btnId, listId, apply) {
       $(btnId).addEventListener('click', function (e) {
@@ -578,6 +637,7 @@
           if (id !== listId) $(id).hidden = true;
         });
         $(listId).hidden = !$(listId).hidden;
+        $(btnId).setAttribute('aria-expanded', $(listId).hidden ? 'false' : 'true');
       });
       $(listId).addEventListener('click', function (e) {
         var li = e.target.closest ? e.target.closest('li[data-v]') : null;
@@ -585,8 +645,16 @@
         e.stopPropagation();
         apply(li.getAttribute('data-v'));
         $(btnId).title = '当前主题：' + li.textContent;
-        Array.prototype.forEach.call($(listId).children, function (x) { x.classList.toggle('on', x === li); });
+        Array.prototype.forEach.call($(listId).children, function (x) {
+          x.classList.toggle('on', x === li);
+          x.setAttribute('aria-checked', x === li ? 'true' : 'false');
+        });
         $(listId).hidden = true;
+        $(btnId).setAttribute('aria-expanded', 'false');
+      });
+      $(listId).addEventListener('keydown', function (e) {
+        var li = e.target.closest ? e.target.closest('li[data-v]') : null;
+        if (li && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); li.click(); }
       });
     }
     bindCfgList('themeBtn', 'themeList', applyTheme);
@@ -607,19 +675,16 @@
       else wmsSubmit(wms.mode);
     });
     $('browserModeVal').addEventListener('click', wmsToggleBrowserMode);
+    ['modeLabel', 'browserModeVal'].forEach(function (id) {
+      $(id).addEventListener('keydown', function (e) {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); this.click(); }
+      });
+    });
     /* 初始显示与标记一致（无头），无需在 wms 对象定义前渲染 */
     fetch('/api/health', { signal: AbortSignal.timeout(1500) })
       .then(function (r) { return r.ok; })
       .then(wmsSetAvailable)
       .catch(function () { wmsSetAvailable(false); });
-
-    /* 文件拖入 */
-    document.addEventListener('dragover', function (e) { e.preventDefault(); });
-    document.addEventListener('drop', function (e) {
-      e.preventDefault();
-      var f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
-      if (f) handleFile(f);
-    });
 
     /* 点击交互（委托） */
     $('out').addEventListener('click', function (e) {
@@ -654,6 +719,10 @@
 
     /* Alt+↑↓ 移动渠道（聚焦渠道名） */
     $('out').addEventListener('keydown', function (e) {
+      if (!e.altKey && (e.key === 'Enter' || e.key === ' ')) {
+        var interactive = e.target.closest ? e.target.closest('.seg-line[data-seg],.chn[data-ch],[data-master],.arr[data-p],.aval[data-ch]') : null;
+        if (interactive) { e.preventDefault(); interactive.click(); return; }
+      }
       if (!e.altKey || (e.key !== 'ArrowUp' && e.key !== 'ArrowDown')) return;
       var chn = e.target.closest ? e.target.closest('.chn') : null;
       if (!chn) return;
@@ -772,6 +841,7 @@
     var el = $('browserModeVal');
     el.textContent = wms.headless ? '无头' : '有头';
     el.classList.toggle('on', !wms.headless);
+    el.setAttribute('aria-pressed', wms.headless ? 'false' : 'true');
   }
   function wmsToggleBrowserMode() {
     wms.headless = !wms.headless;

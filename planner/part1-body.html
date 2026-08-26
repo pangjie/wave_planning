@@ -1,46 +1,61 @@
 <body data-theme="dracula">
+<div class="app-backdrop" aria-hidden="true">
+  <span class="orb orb-a"></span>
+  <span class="orb orb-b"></span>
+  <span class="grid-glow"></span>
+</div>
 <div class="shell">
+  <header class="app-header">
+    <div class="brand"><strong>波次规划工具</strong></div>
+    <div class="header-actions">
+      <button class="bb import" id="btnImport" title="导入订单 Excel">导入订单</button>
+      <button class="bb export" id="btnExport" title="导出 Excel" disabled>导出方案</button>
+      <span class="cfg-wrap">
+        <button class="bb theme" id="themeBtn" title="选择界面主题" aria-haspopup="true" aria-expanded="false">主题</button>
+        <ul class="cfg-list" id="themeList" role="menu" hidden>
+          <li data-v="dracula" class="on" role="menuitemradio" aria-checked="true" tabindex="0">光耀紫府</li>
+          <li data-v="yellow" role="menuitemradio" aria-checked="false" tabindex="0">黄天当立</li>
+          <li data-v="jade" role="menuitemradio" aria-checked="false" tabindex="0">蟠青丛翠</li>
+          <li data-v="reddust" role="menuitemradio" aria-checked="false" tabindex="0">万丈红尘</li>
+          <li data-v="seaclear" role="menuitemradio" aria-checked="false" tabindex="0">海晏河清</li>
+        </ul>
+      </span>
+    </div>
+  </header>
+
   <div class="bodywrap">
     <aside class="side">
-      <div class="side-row side-btns">
-        <button class="bb" id="btnImport" title="导入订单 Excel">导入</button>
-        <button class="bb" id="btnExport" title="导出 Excel" disabled>导出</button>
-        <span class="cfg-wrap">
-          <button class="bb" id="themeBtn" title="选择界面主题">主题</button>
-          <ul class="cfg-list" id="themeList" hidden>
-            <li data-v="dracula" class="on">光耀紫府</li>
-            <li data-v="yellow">黄天当立</li>
-            <li data-v="jade">蟠青丛翠</li>
-            <li data-v="reddust">万丈红尘</li>
-            <li data-v="seaclear">海晏河清</li>
-          </ul>
-        </span>
+      <div class="side-intro">
+        <h2>规划设置</h2>
       </div>
-      <div class="side-row side-mode">
-        <span class="dim">渠道模式</span>
-        <span id="modeLabel" class="mode-toggle" title="点击切换渠道模式（拆分 / 归并）">拆分</span>
+      <div class="side-row mode-card side-mode">
+        <span class="mode-copy"><span class="dim">渠道模式</span></span>
+        <span id="modeLabel" class="mode-toggle" role="button" aria-pressed="false" tabindex="0" title="点击切换渠道模式（拆分 / 归并）">拆分</span>
       </div>
-      <div class="side-row side-browser">
-        <span class="dim">浏览器模式</span>
-        <span id="browserModeVal" class="mode-toggle" title="点击在有头 / 无头之间切换（有头=弹出浏览器可见操作）">无头</span>
+      <div class="side-row mode-card side-browser">
+        <span class="mode-copy"><span class="dim">浏览器模式</span></span>
+        <span id="browserModeVal" class="mode-toggle" role="button" aria-pressed="false" tabindex="0" title="点击在有头 / 无头之间切换（有头=弹出浏览器可见操作）">无头</span>
       </div>
       <div class="side-row side-wms" id="wmsSection" style="display:none">
         <div class="side-wms-head">
-          <span class="dim">WMS 联动</span>
+          <strong>WMS 自动化</strong>
           <span class="wms-dot" id="wmsDot" title="本地服务状态"></span>
         </div>
-        <button class="bb wms-mode" id="wmsExport" data-mode="export" title="选中后点击下方「开始任务」：在 WMS 中提交一次正式订单导出并自动导入全量订单分析">全量分析</button>
-        <button class="bb wms-mode" id="wmsGenerate" data-mode="generate_waves" title="选中后点击下方「开始任务」：按网页勾选的分段顺序逐段生成波次并回填波次号">生成波次</button>
-        <button class="bb wms-mode" id="wmsPrint" data-mode="print_waves" title="选中后点击下方「开始任务」：按下方波次号生成拣货单 PDF 并合并">打印波次</button>
-        <button class="bb wms-mode" id="wmsPick" data-mode="pick_waves" title="选中后点击下方「开始任务」：批量拣货，下方留空=全部待拣货波次，或每行一个波次号">批量拣货</button>
-        <textarea id="wmsWaves" rows="4" spellcheck="false" placeholder="波次号每行一个&#10;拣货留空=全部待拣货"></textarea>
+        <div class="wms-mode-grid">
+          <button class="bb wms-mode" id="wmsExport" data-mode="export" title="选中后点击下方「开始任务」：在 WMS 中提交一次正式订单导出并自动导入全量订单分析">全量分析</button>
+          <button class="bb wms-mode" id="wmsGenerate" data-mode="generate_waves" title="选中后点击下方「开始任务」：按网页勾选的分段顺序逐段生成波次并回填波次号">生成波次</button>
+          <button class="bb wms-mode" id="wmsPrint" data-mode="print_waves" title="选中后点击下方「开始任务」：按下方波次号生成拣货单 PDF 并合并">打印波次</button>
+          <button class="bb wms-mode" id="wmsPick" data-mode="pick_waves" title="选中后点击下方「开始任务」：批量拣货，下方留空=全部待拣货波次，或每行一个波次号">批量拣货</button>
+        </div>
+        <label class="wave-input-label" for="wmsWaves">波次号清单</label>
+        <textarea id="wmsWaves" rows="4" spellcheck="false" placeholder="每行一个波次号&#10;批量拣货留空=全部待拣货"></textarea>
         <button class="bb run" id="wmsRun" disabled title="选中上方任一功能后点击开始；任务运行中点击可终止">开始任务</button>
-        <div class="wms-log" id="wmsLog"></div>
+        <div class="wms-log" id="wmsLog" aria-live="polite"></div>
       </div>
       <div class="side-spacer"></div>
-      <div class="side-row side-status">
+      <div class="side-row side-status" aria-live="polite">
         <span class="status" id="status"></span>
-        <span id="engineLabelWrap"><span class="dim">引擎</span><span id="engineLabel" class="fail">检测中</span></span>
+        <span id="engineLabelWrap"><span class="dim">解析引擎</span><span id="engineLabel" class="fail">检测中</span></span>
       </div>
     </aside>
     <main class="term">
