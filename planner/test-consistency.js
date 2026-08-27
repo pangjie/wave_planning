@@ -402,9 +402,13 @@ console.log('✔ 随机勾选模糊测试完成：24 组');
   ].map(([id, total]) => ({ id, total }));
   const fixed = C.sortChannelsForDisplay(source.slice(), 'normal', 'fixed').map(c => c.id);
   check(JSON.stringify(fixed) === JSON.stringify([
-    'CBT', 'YanWen', 'USPS', 'SwiftX', 'SpeedX', 'Gofo', 'CBS',
-    'UPS', 'BFE', 'UniUni', 'Fedex', '未识别'
+    'CBT', 'USPS', 'SwiftX', 'UPS', 'SpeedX', 'Gofo', 'CBS', 'BFE',
+    'YanWen', 'Fedex', 'UniUni', '未识别'
   ]), `普通模式固定排序不符：${fixed.join(',')}`);
+  check(JSON.stringify(C.FIXED_CHANNEL_ORDER) === JSON.stringify([
+    'CBT', 'USPS', 'SwiftX', 'UPS', 'Fedex', 'SpeedX', 'Gofo', 'CBS',
+    'BFE', 'UniUni', 'YanWen'
+  ]), `拆分模式固定渠道顺序常量不符：${C.FIXED_CHANNEL_ORDER.join(',')}`);
 
   const desc = C.sortChannelsForDisplay(source.slice(), 'normal', 'desc').map(c => c.id);
   check(desc[0] === 'UPS' && desc[desc.length - 1] === '未识别',

@@ -125,76 +125,127 @@ async def test_blocking_dialog_stops_before_work() -> None:
 async def test_set_page_size_skips_when_already_correct() -> None:
     automation = make_automation()
     page = MagicMock()
-    page.keyboard = MagicMock()
-    size_el = MagicMock()
-    size_el.count = AsyncMock(return_value=1)
-    size_el.click = AsyncMock()
-    size_el.first = size_el
-    cur = MagicMock()
-    cur.first = cur
-    cur.wait_for = AsyncMock(return_value=None)  # 已是 1000条/页
+    container = MagicMock()
+    container.count = AsyncMock(return_value=1)
+    container.first = container
+    size_select = MagicMock()
+    size_select.count = AsyncMock(return_value=1)
+    size_select.click = AsyncMock()
+    size_input = MagicMock()
+    size_input.count = AsyncMock(return_value=1)
+    size_input.input_value = AsyncMock(return_value="1000条/页")
+    size_input.click = AsyncMock()
+
+    def _container_locator(sel):
+        if sel == automation.config.selectors.pagination_size_select:
+            return size_select
+        if sel == automation.config.selectors.pagination_size_input:
+            return size_input
+        return MagicMock()
+
+    container.locator = MagicMock(side_effect=_container_locator)
 
     def _locator(sel, **kw):
-        if '.el-pagination__sizes .el-select' in sel:
-            return size_el
-        if '.el-pagination__sizes' in sel:
-            return cur
+        if sel == automation.config.selectors.pagination_size:
+            return container
         return MagicMock()
     page.locator = MagicMock(side_effect=_locator)
 
     await automation._set_page_size(page)
 
-    assert size_el.click.await_count == 0  # 正确时不应重选
+    assert size_input.click.await_count == 0  # 正确时不应重选
 
 
 @pytest.mark.asyncio
 async def test_set_page_size_reselects_when_wrong() -> None:
-    from playwright.async_api import TimeoutError as PlaywrightTimeoutError
-
     automation = make_automation()
     page = MagicMock()
     page.keyboard = MagicMock()
     page.wait_for_timeout = AsyncMock()
-    size_el = MagicMock()
-    size_el.count = AsyncMock(return_value=1)
-    size_el.click = AsyncMock()
-    size_el.first = size_el
+    container = MagicMock()
+    container.count = AsyncMock(return_value=1)
+    container.first = container
+    size_select = MagicMock()
+    size_select.count = AsyncMock(return_value=1)
+    size_select.click = AsyncMock()
+    size_input = MagicMock()
+    size_input.count = AsyncMock(return_value=1)
+    size_input.input_value = AsyncMock(side_effect=["20条/页", "1000条/页"])
+    size_input.click = AsyncMock()
     option = MagicMock()
     option.first = option
     option.wait_for = AsyncMock(return_value=None)
     option.click = AsyncMock()
-    cur = MagicMock()
-    cur.first = cur
-    checks = iter([PlaywrightTimeoutError("not yet"), None])
-
-    def flaky(**kw):
-        r = next(checks)
-        if isinstance(r, Exception):
-            raise r
-        return r
-
-    cur.wait_for = AsyncMock(side_effect=flaky)
+    options = MagicMock()
+    options.filter.return_value.first = option
     loading = MagicMock()
     loading.wait_for = AsyncMock(return_value=None)
 
-    cfg_loading = automation.config.selectors.loading_mask
+    def _container_locator(sel):
+        if sel == automation.config.selectors.pagination_size_select:
+            return size_select
+        if sel == automation.config.selectors.pagination_size_input:
+            return size_input
+        return MagicMock()
+
+    container.locator = MagicMock(side_effect=_container_locator)
 
     def _locator(sel, **kw):
-        if '.el-pagination__sizes .el-select' in sel:
-            return size_el
-        if '.el-pagination__sizes' in sel:
-            return cur
-        if '.el-select-dropdown__item' in sel:
-            return option
-        if sel == cfg_loading:
+        if sel == automation.config.selectors.pagination_size:
+            return container
+        if sel == automation.config.selectors.pagination_size_options:
+            return options
+        if sel == automation.config.selectors.loading_mask:
             return loading
         return MagicMock()
     page.locator = MagicMock(side_effect=_locator)
 
     await automation._set_page_size(page)
 
-    assert size_el.click.await_count == 1
+    assert size_input.click.await_count == 1
     assert option.click.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_set_page_size_stops_when_control_missing() -> None:
+    from app.automation.common import AutomationError
+
+    automation = make_automation()
+    page = MagicMock()
+    missing = MagicMock()
+    missing.count = AsyncMock(return_value=0)
+    page.locator = MagicMock(return_value=missing)
+
+    with pytest.raises(AutomationError, match="每页条数控件"):
+        await automation._set_page_size(page)
+
+
+@pytest.mark.asyncio
+async def test_verify_selected_total_matches_wms_counter() -> None:
+    automation = make_automation()
+    page = MagicMock()
+    selected = MagicMock()
+    selected.count = AsyncMock(return_value=1)
+    selected.first.inner_text = AsyncMock(return_value=" 已选 659 条 ")
+    page.locator = MagicMock(return_value=selected)
+
+    await automation._verify_selected_total(page, "CBT 爆品1", 659)
+
+
+@pytest.mark.asyncio
+async def test_verify_selected_total_stops_before_submit_on_mismatch() -> None:
+    from app.automation.common import AutomationError
+
+    automation = make_automation()
+    automation.config.search_verify_wait_ms = 0
+    page = MagicMock()
+    selected = MagicMock()
+    selected.count = AsyncMock(return_value=1)
+    selected.first.inner_text = AsyncMock(return_value="已选 20 条")
+    page.locator = MagicMock(return_value=selected)
+
+    with pytest.raises(AutomationError, match="待处理应选中 659 条.*实际选中 20 条"):
+        await automation._verify_selected_total(page, "CBT 爆品1", 659)
 
 
 @pytest.mark.asyncio
@@ -378,7 +429,8 @@ async def test_verify_total_pass_when_all_pending() -> None:
     async def progress(stage: str, msg: str) -> None:
         calls.append((stage, msg))
 
-    await automation._verify_search_total(page, progress, "CBT 爆品1", 3)  # 不抛异常
+    actual = await automation._verify_search_total(page, progress, "CBT 爆品1", 3)
+    assert actual == 3
     assert not any(c[0] == "segment_warning" for c in calls)
 
 
@@ -391,7 +443,8 @@ async def test_verify_total_allows_cancelled_with_warning() -> None:
     async def progress(stage: str, msg: str) -> None:
         calls.append((stage, msg))
 
-    await automation._verify_search_total(page, progress, "SwiftX 爆品1", 3)  # 不抛异常
+    actual = await automation._verify_search_total(page, progress, "SwiftX 爆品1", 3)
+    assert actual == 2
     assert any(c[0] == "segment_warning" and "1 个订单已取消" in c[1] for c in calls), calls
 
 
@@ -533,17 +586,18 @@ async def test_search_chunk_retries_once_when_stale(monkeypatch) -> None:
     monkeypatch.setattr(mod, "wait_for_loading", AsyncMock())
     monkeypatch.setattr(
         automation, "_verify_search_total",
-        AsyncMock(side_effect=[SearchResultNotAppliedError("疑似残留"), None]),
+        AsyncMock(side_effect=[SearchResultNotAppliedError("疑似残留"), 2]),
     )
     calls: list[tuple[str, str]] = []
 
     async def progress(stage: str, msg: str) -> None:
         calls.append((stage, msg))
 
-    await automation._search_chunk(
+    actual = await automation._search_chunk(
         page, textarea, filter_icon, ["A", "B"], "USPS 多件2",
         prev_expected=75, progress=progress,
-    )  # 不抛异常
+    )
+    assert actual == 2
     assert textarea.fill.await_count == 2
     assert any("重新粘贴查询并复核" in msg for _, msg in calls), calls
 

@@ -31,7 +31,8 @@ var KIND_SHORT = { hot: '爆品', paper: '单件', multi: '多件', mix: '混件
 var KIND_TYPE = { hot: '单件', paper: '单件paper', multi: '多件', mix: '混件paper' };
 var DOMAIN_CHANNELS = ['CBT', 'CBS', 'SwiftX', 'SpeedX', 'YanWen', 'Gofo', 'UPS', 'USPS', 'Fedex', 'UniUni', 'BFE', '未识别'];
 var MERGED_CHANNELS = ['CBT', 'CBS', '普通'];
-var FIXED_CHANNEL_ORDER = ['CBT', 'UniUni', 'YanWen', 'USPS', 'SwiftX', 'SpeedX', 'Gofo', 'CBS'];
+/* 固定排序中的 BFE 是系统现有渠道 ID，对应业务清单中的“BEF”位置。 */
+var FIXED_CHANNEL_ORDER = ['CBT', 'USPS', 'SwiftX', 'UPS', 'Fedex', 'SpeedX', 'Gofo', 'CBS', 'BFE', 'UniUni', 'YanWen'];
 var FIXED_MERGED_ORDER = ['CBT', '普通', 'CBS'];
 /* 导出展示用分段名：不编号（爆品1 → 爆品；单件paper-2 → 单件paper） */
 function segDisplayName(name) {

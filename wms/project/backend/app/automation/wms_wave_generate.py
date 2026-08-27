@@ -17,6 +17,7 @@ from app.automation.common import (
     open_browser_context,
     resolve_headless,
     wait_for_loading,
+    wait_for_input_value,
 )
 from app.core.config import (
     Settings,
@@ -245,21 +246,33 @@ class WmsWaveGenerateAutomation:
 
     async def _set_page_size(self, page: Page) -> None:
         cfg = self.config
-        size_select = page.locator('.el-pagination__sizes .el-select').first
-        if await size_select.count() == 0:
-            return  # 分页器不存在时跳过（保持现状）
-        # 系统会记住上次设置：先确认当前每页条数，正确则无需重选
+        sel = cfg.selectors
+        size_containers = page.locator(sel.pagination_size)
+        if await size_containers.count() != 1:
+            raise AutomationError("无法唯一定位右下角每页条数控件，已停止。")
+        size_container = size_containers.first
+        size_select = size_container.locator(sel.pagination_size_select)
+        size_input = size_container.locator(sel.pagination_size_input)
+        if await size_select.count() != 1 or await size_input.count() != 1:
+            raise AutomationError("右下角每页条数控件结构异常，已停止。")
+
+        # 必须读取输入框的真实 value；容器 textContent 同时包含隐藏的
+        # 所有下拉选项，用 has_text 会把“20条/页”误判成“1000条/页”。
         try:
-            await page.locator(
-                '.el-pagination__sizes', has_text=cfg.page_size_option
-            ).first.wait_for(state="visible", timeout=3000)
+            current = (await size_input.input_value(timeout=cfg.timeouts_ms.action)).strip()
+        except PlaywrightTimeoutError as exc:
+            raise AutomationError("无法读取右下角当前每页条数，已停止。") from exc
+        if current == cfg.page_size_option:
             return
-        except PlaywrightTimeoutError:
-            pass
-        option = page.locator('.el-select-dropdown__item', has_text=cfg.page_size_option).first
+
+        exact_option = re.compile(rf"^\s*{re.escape(cfg.page_size_option)}\s*$")
+        # 展开后 WMS 会把选项容器移到页面根部，必须全局定位。
+        option = page.locator(sel.pagination_size_options).filter(
+            has_text=exact_option
+        ).first
         applied = False
         for _attempt in range(3):
-            await size_select.click(timeout=cfg.timeouts_ms.action)
+            await size_input.click(timeout=cfg.timeouts_ms.action)
             try:
                 await option.wait_for(state="visible", timeout=3000)
                 await option.click(timeout=cfg.timeouts_ms.action)
@@ -270,13 +283,14 @@ class WmsWaveGenerateAutomation:
                 await page.wait_for_timeout(600)
         if not applied:
             raise AutomationError(f"无法设置每页显示“{cfg.page_size_option}”。")
-        # 校验生效
-        try:
-            await page.locator(
-                '.el-pagination__sizes', has_text=cfg.page_size_option
-            ).first.wait_for(state="visible", timeout=cfg.timeouts_ms.search_result)
-        except PlaywrightTimeoutError as exc:
-            raise AutomationError(f"每页显示“{cfg.page_size_option}”未生效。") from exc
+
+        current = await wait_for_input_value(
+            size_input, cfg.page_size_option, cfg.timeouts_ms.search_result
+        )
+        if current != cfg.page_size_option:
+            raise AutomationError(
+                f"每页显示“{cfg.page_size_option}”未生效（当前为“{current or '未读取'}”）。"
+            )
         await wait_for_loading(
             page, cfg.selectors.loading_mask, cfg.timeouts_ms.search_result,
             "调整每页条数后页面加载超时。",
@@ -316,17 +330,26 @@ class WmsWaveGenerateAutomation:
             raise AutomationError("多项搜索按钮不唯一或不存在。")
         textarea = page.locator(sel.multi_search_textarea).first
 
+        pending_expected = 0
         for chunk in chunk_list(order_nos, cfg.multi_search_max_lines):
-            await self._search_chunk(
+            pending_expected = await self._search_chunk(
                 page, textarea, filter_icon, chunk, label,
                 prev_expected=prev_expected, progress=progress,
             )
 
-        # 3) 全选当前列表
+        # 3) 提交前再确认分页未被页面刷新重置，然后全选并核对实际勾选数。
+        await self._set_page_size(page)
+        current_total = await self._read_search_total(page, sel, timeouts)
+        if current_total != pending_expected:
+            raise AutomationError(
+                f"分段 {label}：调整分页后搜索结果数发生变化"
+                f"（待处理应为 {pending_expected}，当前为 {current_total}），已停止。"
+            )
         select_all = page.locator(sel.select_all_checkbox + ":visible").first
         if await select_all.count() != 1:
             raise AutomationError("表头全选框不唯一或不可见。")
         await select_all.click(timeout=timeouts.action)
+        await self._verify_selected_total(page, label, pending_expected)
 
         # 4) 生成波次 → 按勾选数据
         gen_btn = page.locator(sel.generate_wave_button)
@@ -405,7 +428,7 @@ class WmsWaveGenerateAutomation:
         *,
         prev_expected: int | None,
         progress: ProgressCallback,
-    ) -> None:
+    ) -> int:
         """粘贴一批出库单号并查询，核对结果数量；疑似读到上一次查询的残留时重查一次。
 
         安全边界：重查只重新粘贴同一批单号并再次点击“搜索”，绝不重复提交生成波次；
@@ -433,10 +456,9 @@ class WmsWaveGenerateAutomation:
                 f"分段 {label} 搜索后页面加载超时。",
             )
             try:
-                await self._verify_search_total(
+                return await self._verify_search_total(
                     page, progress, label, len(chunk), prev_expected=prev_expected
                 )
-                return
             except SearchResultNotAppliedError as exc:
                 if attempt == 1:
                     raise AutomationError(
@@ -447,6 +469,7 @@ class WmsWaveGenerateAutomation:
                     f"分段 {label}：搜索结果疑似残留上一次查询（总数 {prev_expected}），"
                     "重新粘贴查询并复核（不重复生成波次）。",
                 )
+        raise AutomationError(f"分段 {label}：搜索校验未完成，已停止。")
 
     async def _verify_search_total(
         self,
@@ -456,7 +479,7 @@ class WmsWaveGenerateAutomation:
         expected: int,
         *,
         prev_expected: int | None = None,
-    ) -> None:
+    ) -> int:
         """搜索后核对结果数量。
 
         以右下角“共 X 条”为准（它与结果表同步刷新）：
@@ -480,7 +503,7 @@ class WmsWaveGenerateAutomation:
                 f"分段 {label}：无法读取搜索结果总数（共 X 条），已停止。"
             )
         if total == expected:
-            return
+            return total
 
         # 结果可能在加载中：轮询至总数稳定或达到目标（时长有上限）
         deadline = time.monotonic() + self.config.search_verify_wait_ms / 1000.0
@@ -490,7 +513,7 @@ class WmsWaveGenerateAutomation:
             if cur is None:
                 continue
             if cur == expected:
-                return
+                return cur
             if cur == total:
                 break  # 连续两次读数相同 → 已稳定
             total = cur
@@ -512,7 +535,7 @@ class WmsWaveGenerateAutomation:
                     f"分段 {label}：有 {cancelled} 个订单已取消"
                     f"（共 {expected} 单，待处理 {pending} 单），继续生成波次。",
                 )
-            return
+            return pending
 
         if prev_expected is not None and total == prev_expected:
             raise SearchResultNotAppliedError(
@@ -524,6 +547,40 @@ class WmsWaveGenerateAutomation:
             f"分段 {label}：搜索结果总数 {total} 与目标 {expected} 不一致"
             f"（待处理 {pending}、已取消 {cancelled}），"
             "搜索结果可能未正确生效或被清空，已停止。"
+        )
+
+    async def _verify_selected_total(
+        self,
+        page: Page,
+        label: str,
+        expected: int,
+    ) -> None:
+        """读取 WMS 显示的“已选 X 条”，在生产提交前核对实际勾选数。"""
+        selected = page.locator(self.config.selectors.selected_total)
+        if await selected.count() != 1:
+            raise AutomationError(
+                f"分段 {label}：无法唯一读取“已选 X 条”，未提交生成波次。"
+            )
+
+        deadline = time.monotonic() + self.config.search_verify_wait_ms / 1000.0
+        actual: int | None = None
+        while True:
+            try:
+                text = await selected.first.inner_text(timeout=self.config.timeouts_ms.action)
+            except PlaywrightTimeoutError:
+                text = ""
+            match = re.search(r"已选\s*(\d+)\s*条", text or "")
+            actual = int(match.group(1)) if match else None
+            if actual == expected:
+                return
+            if time.monotonic() >= deadline:
+                break
+            await page.wait_for_timeout(250)
+
+        actual_text = str(actual) if actual is not None else "无法读取"
+        raise AutomationError(
+            f"分段 {label}：待处理应选中 {expected} 条，WMS 实际选中 {actual_text} 条，"
+            "未提交生成波次。"
         )
 
     async def _read_search_total(

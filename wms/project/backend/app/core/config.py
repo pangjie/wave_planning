@@ -108,7 +108,12 @@ class WaveGenerationSelectorConfig(BaseModel):
     multi_search_textarea: str
     multi_search_button: str
     pagination_total: str
+    pagination_size: str
+    pagination_size_select: str
+    pagination_size_input: str
+    pagination_size_options: str
     select_all_checkbox: str
+    selected_total: str
     generate_wave_button: str
     generate_by_selection_item: str
     wave_dialog: str
