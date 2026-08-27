@@ -162,8 +162,10 @@ class WmsWavePrintAutomation:
         merged_output_name = _dated_merge_filename()
         await progress(
             "launching",
-            f"正在以{browser_label}模式启动专用浏览器；将按输入顺序打印 "
-            f"{len(selected)} 个波次，并合并为 {merged_output_name}。",
+            f"正在以{browser_label}模式启动专用浏览器；将使用最多 "
+            f"{self.config.wave_printing.max_concurrent_waves} 个独立页面并行打印 "
+            f"{len(selected)} 个波次，并按输入顺序合并为 "
+            f"{merged_output_name}。",
         )
 
         async with open_browser_context(
@@ -208,42 +210,110 @@ class WmsWavePrintAutomation:
         control_page = await first_page(context)
         output_dir = self.settings.outputs_dir  # 打印 PDF 保存在项目内部 outputs/
         output_dir.mkdir(parents=True, exist_ok=True)
-        printed_files: list[Path] = []
-        printed_wave_nos: list[str] = []
+        total = len(wave_nos)
+        concurrency = min(self.config.wave_printing.max_concurrent_waves, total)
+        pages = [control_page]
+        for _ in range(1, concurrency):
+            pages.append(await context.new_page())
+
+        await progress(
+            "parallel_start",
+            f"已锁定 {total} 个待打印波次，将使用最多 "
+            f"{concurrency} 个独立页面分批并行处理；"
+            "合并顺序仍与输入顺序一致。",
+        )
+
+        printed_by_index: list[Path | None] = [None] * total
         failed_wave_nos: list[str] = []
         warnings: list[str] = []
 
-        for index, wave_no in enumerate(wave_nos, start=1):
+        for batch_start in range(0, total, concurrency):
+            batch = wave_nos[batch_start:batch_start + concurrency]
+            batch_number = batch_start // concurrency + 1
+            batch_count = (total + concurrency - 1) // concurrency
             await progress(
-                "locating_wave",
-                f"第 {index}/{len(wave_nos)} 个：正在“{self.config.wave_printing.wave_tab_text}”"
-                f"列表中查找波次 {wave_no}。",
+                "print_batch_start",
+                f"正在打印第 {batch_number}/{batch_count} 批，共 {len(batch)} 个波次："
+                + "、".join(batch),
             )
-            try:
+
+            async def run_page(
+                slot_index: int,
+                page: Page,
+                wave_no: str,
+            ) -> Path:
+                sequence = batch_start + slot_index + 1
+                await progress(
+                    "locating_wave",
+                    f"第 {sequence}/{total} 个：正在“"
+                    f"{self.config.wave_printing.wave_tab_text}”列表中查找波次 "
+                    f"{wave_no}。",
+                )
                 printed_file = await self._print_wave(
-                    context,
-                    control_page,
+                    page,
                     progress,
                     wave_no,
-                    index,
-                    len(wave_nos),
+                    sequence,
+                    total,
                     output_dir,
                 )
-            except WaveNotFoundError as exc:
-                failed_wave_nos.append(wave_no)
-                warnings.append(str(exc))
                 await progress(
-                    "wave_not_found",
-                    f"波次 {wave_no} 在当前“{self.config.wave_printing.wave_tab_text}”"
-                    "列表中不可见，已跳过并继续下一个指定波次。",
+                    "wave_pdf_saved",
+                    f"第 {sequence}/{total} 个：波次 {wave_no} "
+                    f"已保存为 {printed_file.name}。",
                 )
-                continue
-            printed_files.append(printed_file)
-            printed_wave_nos.append(wave_no)
-            await progress(
-                "wave_pdf_saved",
-                f"第 {index}/{len(wave_nos)} 个：波次 {wave_no} 已保存为 {printed_file.name}。",
+                return printed_file
+
+            results = await asyncio.gather(
+                *(
+                    run_page(index, page, wave_no)
+                    for index, (page, wave_no) in enumerate(
+                        zip(pages[:len(batch)], batch, strict=True)
+                    )
+                ),
+                return_exceptions=True,
             )
+            fatal_failures: list[tuple[str, BaseException]] = []
+            for slot_index, (wave_no, result) in enumerate(
+                zip(batch, results, strict=True)
+            ):
+                if isinstance(result, Path):
+                    printed_by_index[batch_start + slot_index] = result
+                    continue
+                if isinstance(result, WaveNotFoundError):
+                    failed_wave_nos.append(wave_no)
+                    warnings.append(str(result))
+                    await progress(
+                        "wave_not_found",
+                        f"波次 {wave_no} 在当前“"
+                        f"{self.config.wave_printing.wave_tab_text}”列表中不可见，"
+                        "已跳过并继续下一批指定波次。",
+                    )
+                    continue
+                if isinstance(result, BaseException):
+                    fatal_failures.append((wave_no, result))
+                else:
+                    fatal_failures.append(
+                        (wave_no, RuntimeError(f"未知打印结果：{result!r}"))
+                    )
+
+            if fatal_failures:
+                failure_text = "；".join(
+                    f"{wave_no}：{error}" for wave_no, error in fatal_failures
+                )
+                completed_count = sum(path is not None for path in printed_by_index)
+                raise AutomationError(
+                    f"已完成 {completed_count}/{total} 个波次 PDF；"
+                    "当前并行批次出现非“波次未找到”错误，"
+                    f"后续批次已停止。失败：{failure_text}"
+                ) from fatal_failures[0][1]
+
+        printed_files = [path for path in printed_by_index if path is not None]
+        printed_wave_nos = [
+            wave_no
+            for wave_no, path in zip(wave_nos, printed_by_index, strict=True)
+            if path is not None
+        ]
 
         if not printed_files:
             raise AutomationError(
@@ -282,7 +352,6 @@ class WmsWavePrintAutomation:
 
     async def _print_wave(
         self,
-        context: BrowserContext,
         control_page: Page,
         progress: ProgressCallback,
         wave_no: str,
@@ -327,7 +396,6 @@ class WmsWavePrintAutomation:
             "opening_print_center",
             f"第 {sequence}/{total} 个：正在打开波次 {wave_no} 的打印中心。",
         )
-        baseline_pages = set(context.pages)
         observed_pages: list[Page] = []
         request_diagnostics: list[dict[str, object]] = []
 
@@ -360,7 +428,9 @@ class WmsWavePrintAutomation:
                     }
                 )
 
-        context.on("page", remember_page)
+        # 只监听当前工作页打开的 popup。并行打印时若监听
+        # BrowserContext.page，一路任务可能会误拿另一路的打印中心。
+        control_page.on("popup", remember_page)
         control_page.on("response", remember_response)
         control_page.on("requestfailed", remember_request_failure)
         native_dialogs: list[tuple[str, bool]] = []
@@ -398,15 +468,13 @@ class WmsWavePrintAutomation:
                     f"波次 {wave_no} 已打印过拣货单；已按指引确认再次打印。",
                 )
             print_page, print_surface = await self._wait_for_print_center(
-                context,
                 control_page,
-                baseline_pages,
                 observed_pages,
                 previous_url,
                 request_diagnostics,
             )
         finally:
-            context.remove_listener("page", remember_page)
+            control_page.remove_listener("popup", remember_page)
             control_page.remove_listener("response", remember_response)
             control_page.remove_listener("requestfailed", remember_request_failure)
             control_page.remove_listener("dialog", handle_native_dialog)
@@ -471,9 +539,7 @@ class WmsWavePrintAutomation:
 
     async def _wait_for_print_center(
         self,
-        context: BrowserContext,
         control_page: Page,
-        baseline_pages: set[Page],
         observed_pages: list[Page],
         previous_url: str,
         request_diagnostics: list[dict[str, object]],
@@ -484,9 +550,7 @@ class WmsWavePrintAutomation:
 
         while loop.time() < deadline:
             candidates = _print_candidate_pages(
-                context,
                 control_page,
-                baseline_pages,
                 observed_pages,
             )
             for candidate in reversed(candidates):
@@ -514,9 +578,7 @@ class WmsWavePrintAutomation:
         )
         diagnostics = await self._describe_print_candidates(
             _print_candidate_pages(
-                context,
                 control_page,
-                baseline_pages,
                 observed_pages,
             )
         )
@@ -975,16 +1037,12 @@ class WmsWavePrintAutomation:
 
 
 def _print_candidate_pages(
-    context: BrowserContext,
     control_page: Page,
-    baseline_pages: set[Page],
     observed_pages: list[Page],
 ) -> list[Page]:
-    """Keep short-lived popup pages in the diagnostic candidate set."""
+    """Return only this worker's page and popups, preserving page isolation."""
     candidates: list[Page] = []
-    for page in [*context.pages, *observed_pages]:
-        if page is not control_page and page in baseline_pages:
-            continue
+    for page in [control_page, *observed_pages]:
         if page not in candidates:
             candidates.append(page)
     return candidates

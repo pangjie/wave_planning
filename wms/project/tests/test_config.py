@@ -13,6 +13,7 @@ def test_automation_config_loads() -> None:
     assert config.wave_picking.max_concurrent_waves == 5
     assert config.wave_printing.template_name == "一件代发汇总拣货单"
     assert config.wave_printing.wave_tab_text == "全部"
+    assert config.wave_printing.max_concurrent_waves == 5
     assert config.wave_printing.max_selected_waves == 100
     assert config.wave_printing.pdf_format == "Letter"
     assert "ak-dropdown-item" in config.wave_printing.selectors.print_summary_item

@@ -62,6 +62,7 @@
   "wave_printing": {
     "wave_tab_text": "全部",
     "template_name": "一件代发汇总拣货单",
+    "max_concurrent_waves": 5,
     "max_selected_waves": 100,
     "pdf_format": "Letter",
     "selectors": {

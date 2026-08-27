@@ -95,6 +95,7 @@ class WavePrintTimeoutConfig(BaseModel):
 class WavePrintingConfig(BaseModel):
     wave_tab_text: str
     template_name: str
+    max_concurrent_waves: int = Field(default=5, ge=5, le=5)
     max_selected_waves: int = Field(gt=0, le=500)
     pdf_format: Literal["A4", "Letter"] = "Letter"
     selectors: WavePrintSelectorConfig

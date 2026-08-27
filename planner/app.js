@@ -154,6 +154,58 @@
     if (msg) statusTimer = setTimeout(function () { el.textContent = ''; el.className = 'status'; }, 5000);
   }
 
+  /* ---------- 纯视觉反馈（不参与订单、渠道与分段计算） ---------- */
+  var reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function metricMarkup(id, value, suffix) {
+    return '<strong id="' + id + '" data-roll-value="' + value + '"><span class="metric-number">' + value +
+      '</span><span class="metric-unit">' + suffix + '</span></strong>';
+  }
+  function collectMetricValues() {
+    var values = {};
+    Array.prototype.forEach.call(document.querySelectorAll('#dash [data-roll-value]'), function (el) {
+      values[el.id] = Number(el.dataset.rollValue) || 0;
+    });
+    return values;
+  }
+  function animateMetric(el, target, fromValue) {
+    if (!el) return;
+    target = Math.max(0, Math.round(Number(target) || 0));
+    var numberEl = el.querySelector('.metric-number');
+    if (!numberEl) return;
+    var current = fromValue == null ? Number(numberEl.textContent) : Number(fromValue);
+    if (!isFinite(current)) current = target;
+    current = Math.max(0, Math.round(current));
+    el.dataset.rollValue = String(target);
+    if (el._metricFrame) cancelAnimationFrame(el._metricFrame);
+    if (reduceMotion || current === target) {
+      numberEl.textContent = String(target);
+      return;
+    }
+    var started = performance.now();
+    var duration = 460;
+    el.classList.remove('metric-rolling');
+    void el.offsetWidth;
+    el.classList.add('metric-rolling');
+    function frame(now) {
+      if (!el.isConnected) return;
+      var p = Math.min(1, (now - started) / duration);
+      var eased = 1 - Math.pow(1 - p, 3);
+      numberEl.textContent = String(Math.round(current + (target - current) * eased));
+      if (p < 1) el._metricFrame = requestAnimationFrame(frame);
+      else {
+        el._metricFrame = null;
+        numberEl.textContent = String(target);
+        setTimeout(function () { if (el.isConnected) el.classList.remove('metric-rolling'); }, 60);
+      }
+    }
+    el._metricFrame = requestAnimationFrame(frame);
+  }
+  function animateRenderedMetrics(previous) {
+    Array.prototype.forEach.call(document.querySelectorAll('#dash [data-roll-value]'), function (el) {
+      var target = Number(el.dataset.rollValue) || 0;
+      animateMetric(el, target, Object.prototype.hasOwnProperty.call(previous, el.id) ? previous[el.id] : 0);
+    });
+  }
   /* ---------- 导入 ---------- */
   function clearData() {
     var keepN = state.modes.normal.unified;
@@ -373,11 +425,11 @@
     return '<section class="dash-summary"><div class="summary-title"><strong>规划概览</strong><span>' +
       (state.merged ? '渠道归并' : '渠道拆分') + '</span></div>' +
       '<div class="metric-grid">' +
-        '<div class="metric"><small>导入订单</small><strong id="totalOrderMetric">' + state.records.length + '<span>单</span></strong></div>' +
-        '<div class="metric"><small>激活订单</small><strong id="selectedOrderMetric">' + selectedOrders + '<span>单</span></strong></div>' +
-        '<div class="metric"><small>激活波次</small><strong id="selectedWaveMetric">' + selectedWaves + '<span>波</span></strong></div>' +
-        '<div class="metric"><small>活跃SKU</small><strong id="selectedSkuMetric">' + selectedSkus + '<span>个</span></strong></div>' +
-        '<div class="metric"><small>活跃渠道</small><strong id="selectedChannelMetric">' + selectedChans + '<span>/' + activeChans.length + '</span></strong></div>' +
+        '<div class="metric"><small>导入订单</small>' + metricMarkup('totalOrderMetric', state.records.length, '单') + '</div>' +
+        '<div class="metric"><small>激活订单</small>' + metricMarkup('selectedOrderMetric', selectedOrders, '单') + '</div>' +
+        '<div class="metric"><small>激活波次</small>' + metricMarkup('selectedWaveMetric', selectedWaves, '波') + '</div>' +
+        '<div class="metric"><small>活跃SKU</small>' + metricMarkup('selectedSkuMetric', selectedSkus, '个') + '</div>' +
+        '<div class="metric"><small>活跃渠道</small>' + metricMarkup('selectedChannelMetric', selectedChans, '/' + activeChans.length) + '</div>' +
       '</div></section>' +
       '<section class="matrix-panel"><div class="twrap"><table class="pt">' +
       '<colgroup><col style="width:10%"><col style="width:6%"><col style="width:6%">' +
@@ -388,7 +440,9 @@
 
   /* ---------- 渲染（保持滚动位置，结构稳定；空数据也显示表格骨架） ---------- */
   function renderDash() {
+    var previousMetrics = collectMetricValues();
     $('dash').innerHTML = dashHtml();
+    animateRenderedMetrics(previousMetrics);
   }
   function renderBar() {
     var ok = typeof XLSX !== 'undefined';
@@ -469,22 +523,24 @@
       if (c) c.innerHTML = '<span class="wc">' + st[t].waves + '波</span>/<span class="oc">' + st[t].orders + '单</span>';
     });
     var selectedOrderMetric = $('selectedOrderMetric');
-    if (selectedOrderMetric) selectedOrderMetric.innerHTML = effectiveOrderSum() + '<span>单</span>';
+    if (selectedOrderMetric) animateMetric(selectedOrderMetric, effectiveOrderSum());
     var selectedWaveMetric = $('selectedWaveMetric');
     if (selectedWaveMetric) {
       var waves = TYPE_ORDER.reduce(function (n, t) { return n + st[t].waves; }, 0);
-      selectedWaveMetric.innerHTML = waves + '<span>波</span>';
+      animateMetric(selectedWaveMetric, waves);
     }
     var selectedSkuMetric = $('selectedSkuMetric');
     if (selectedSkuMetric) {
       var m = ms();
-      selectedSkuMetric.innerHTML = selectedSkuCount(curAnalysis(), state.records, m.sel.channels, m.sel.segs) + '<span>个</span>';
+      animateMetric(selectedSkuMetric, selectedSkuCount(curAnalysis(), state.records, m.sel.channels, m.sel.segs));
     }
     var selectedChannelMetric = $('selectedChannelMetric');
     if (selectedChannelMetric) {
       var active = residentChannels(curAnalysis());
       var selected = active.filter(function (ch) { return ms().sel.channels.has(ch.id); }).length;
-      selectedChannelMetric.innerHTML = selected + '<span>/' + active.length + '</span>';
+      var unit = selectedChannelMetric.querySelector('.metric-unit');
+      if (unit) unit.textContent = '/' + active.length;
+      animateMetric(selectedChannelMetric, selected);
     }
   }
   function setGlyphState(el, state) {
@@ -641,8 +697,9 @@
     var m = state.modes.normal;
     var current = getAnalysis('normal');
     var ids = orderedChannels(current, m.order).map(function (ch) { return ch.id; });
+    var evolving = !state.ordinaryEvolved;
     clearOrdinarySegSelection(m);
-    if (!state.ordinaryEvolved) {
+    if (evolving) {
       state.ordinaryEvolved = true;
       ids = ids.map(function (id) { return id === '未识别' ? '普通' : id; });
       if (ids.indexOf('普通') < 0) ids.push('普通');
@@ -726,7 +783,9 @@
   function bindEvents() {
     $('btnImport').addEventListener('click', function () { $('fileInput').click(); });
     $('fileInput').addEventListener('change', function () {
-      if (this.files && this.files[0]) handleFile(this.files[0]);
+      if (this.files && this.files[0]) {
+        handleFile(this.files[0]);
+      }
       this.value = '';
     });
     $('btnExport').addEventListener('click', doExport);
@@ -1417,6 +1476,7 @@
     wmsRestore: wmsRestore,
     curAnalysis: curAnalysis,
     getAnalysis: getAnalysis,
+    toggleOrdinaryEvolution: toggleOrdinaryEvolution,
     buildExportBuffer: wmsBuildExportBuffer,
     buildExportNow: function () {
       return currentExportData();

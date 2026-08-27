@@ -1,3 +1,4 @@
+import asyncio
 from datetime import date
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -5,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.automation.common import AutomationError
+from app.automation.wave_pending import WaveNotFoundError
 from app.automation.wms_wave_print import (
     QpdfMerger,
     WmsWavePrintAutomation,
@@ -99,43 +101,145 @@ def test_dated_merge_filename_and_letter_centering() -> None:
 
 
 @pytest.mark.asyncio
-async def test_selected_waves_are_printed_sequentially_then_merged(tmp_path: Path) -> None:
+async def test_selected_waves_print_five_at_a_time_then_merge_in_input_order(
+    tmp_path: Path,
+) -> None:
     merger = MagicMock()
     merger.merge = AsyncMock()
     automation = make_automation(tmp_path)
     automation.merger = merger
-    printed_order: list[str] = []
+    active = 0
+    max_active = 0
+    completed_order: list[str] = []
 
-    async def print_wave(context, page, progress, wave_no, sequence, total, output_dir):
-        printed_order.append(wave_no)
+    async def print_wave(page, progress, wave_no, sequence, total, output_dir):
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        await asyncio.sleep(
+            {1: 0.05, 2: 0.01, 3: 0.04, 4: 0.02, 5: 0.03}.get(
+                sequence,
+                0.01,
+            )
+        )
+        active -= 1
+        completed_order.append(wave_no)
         output = output_dir / f"{wave_no}.pdf"
         fake_pdf(output)
         return output
 
     automation._print_wave = AsyncMock(side_effect=print_wave)
-    page = MagicMock()
-    page.url = "https://wms.xlwms.com/outbound/wave"
+    pages = [MagicMock() for _ in range(5)]
+    for page in pages:
+        page.url = "https://wms.xlwms.com/outbound/wave"
     context = MagicMock()
-    context.pages = [page]
+    context.pages = [pages[0]]
     context.add_init_script = AsyncMock()
+    context.new_page = AsyncMock(side_effect=pages[1:])
+    progress = AsyncMock()
+    wave_nos = ["W003", "W001", "W007", "W005", "W002", "W006", "W004"]
+
+    result = await automation._run_selected(
+        context,
+        progress,
+        wave_nos,
+        "Paper合并_2026-07-18.pdf",
+    )
+
+    assert max_active == 5
+    assert completed_order[:5] != wave_nos[:5]
+    assert result.wave_nos == wave_nos
+    assert result.failed_wave_nos == []
+    assert result.merged_file == str(tmp_path / "Paper合并_2026-07-18.pdf")
+    context.add_init_script.assert_awaited_once()
+    assert context.new_page.await_count == 4
+    worker_pages = [call.args[0] for call in automation._print_wave.await_args_list]
+    assert all(worker_pages[index] is pages[index] for index in range(5))
+    assert worker_pages[5] is pages[0]
+    assert worker_pages[6] is pages[1]
+    merger.merge.assert_awaited_once_with(
+        [tmp_path / f"{wave_no}.pdf" for wave_no in wave_nos],
+        tmp_path / "Paper合并_2026-07-18.pdf",
+    )
+    assert any(
+        call.args[0] == "parallel_start" for call in progress.await_args_list
+    )
+
+
+@pytest.mark.asyncio
+async def test_parallel_print_skips_missing_wave_and_preserves_remaining_order(
+    tmp_path: Path,
+) -> None:
+    merger = MagicMock()
+    merger.merge = AsyncMock()
+    automation = make_automation(tmp_path)
+    automation.merger = merger
+
+    async def print_wave(page, progress, wave_no, sequence, total, output_dir):
+        if wave_no == "W002":
+            raise WaveNotFoundError("波次 W002 不在“全部”列表中。")
+        output = output_dir / f"{wave_no}.pdf"
+        fake_pdf(output)
+        return output
+
+    automation._print_wave = AsyncMock(side_effect=print_wave)
+    pages = [MagicMock() for _ in range(4)]
+    pages[0].url = "https://wms.xlwms.com/outbound/wave"
+    context = MagicMock()
+    context.pages = [pages[0]]
+    context.add_init_script = AsyncMock()
+    context.new_page = AsyncMock(side_effect=pages[1:])
     progress = AsyncMock()
 
     result = await automation._run_selected(
         context,
         progress,
-        ["W002", "W001"],
+        ["W003", "W002", "W001", "W004"],
         "Paper合并_2026-07-18.pdf",
     )
 
-    assert printed_order == ["W002", "W001"]
-    assert result.wave_nos == ["W002", "W001"]
-    assert result.failed_wave_nos == []
-    assert result.merged_file == str(tmp_path / "Paper合并_2026-07-18.pdf")
-    context.add_init_script.assert_awaited_once()
+    assert result.wave_nos == ["W003", "W001", "W004"]
+    assert result.failed_wave_nos == ["W002"]
     merger.merge.assert_awaited_once_with(
-        [tmp_path / "W002.pdf", tmp_path / "W001.pdf"],
+        [tmp_path / "W003.pdf", tmp_path / "W001.pdf", tmp_path / "W004.pdf"],
         tmp_path / "Paper合并_2026-07-18.pdf",
     )
+
+
+@pytest.mark.asyncio
+async def test_parallel_print_fatal_error_stops_later_batches(tmp_path: Path) -> None:
+    merger = MagicMock()
+    merger.merge = AsyncMock()
+    automation = make_automation(tmp_path)
+    automation.merger = merger
+    attempted: list[str] = []
+
+    async def print_wave(page, progress, wave_no, sequence, total, output_dir):
+        attempted.append(wave_no)
+        if wave_no == "W002":
+            raise AutomationError("打印中心结构异常")
+        output = output_dir / f"{wave_no}.pdf"
+        fake_pdf(output)
+        return output
+
+    automation._print_wave = AsyncMock(side_effect=print_wave)
+    pages = [MagicMock() for _ in range(5)]
+    pages[0].url = "https://wms.xlwms.com/outbound/wave"
+    context = MagicMock()
+    context.pages = [pages[0]]
+    context.add_init_script = AsyncMock()
+    context.new_page = AsyncMock(side_effect=pages[1:])
+
+    with pytest.raises(AutomationError, match="后续批次已停止"):
+        await automation._run_selected(
+            context,
+            AsyncMock(),
+            ["W001", "W002", "W003", "W004", "W005", "W006"],
+            "Paper合并_2026-07-18.pdf",
+        )
+
+    assert attempted == ["W001", "W002", "W003", "W004", "W005"]
+    merger.merge.assert_not_awaited()
 
 
 @pytest.mark.asyncio

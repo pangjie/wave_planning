@@ -65,10 +65,7 @@ html{background:var(--bg)}
 body{
   position:relative;
   overflow:hidden;
-  background:
-    radial-gradient(circle at 18% -10%,color-mix(in srgb,var(--accent) 16%,transparent),transparent 32%),
-    radial-gradient(circle at 92% 110%,color-mix(in srgb,var(--accent2) 11%,transparent),transparent 34%),
-    var(--bg);
+  background:var(--bg);
   color:var(--fg);
   font-family:"Sarasa Mono SC","Sarasa Term SC","Noto Sans Mono CJK SC","LXGW WenKai Mono",
     ui-monospace,"SF Mono","Cascadia Mono","JetBrains Mono",Menlo,Consolas,monospace;
@@ -86,33 +83,6 @@ button:focus-visible,[role="button"]:focus-visible,[role="checkbox"]:focus-visib
 ::-webkit-scrollbar-track{background:transparent}
 ::-webkit-scrollbar-thumb{background:color-mix(in srgb,var(--line) 72%,var(--dim));border:3px solid transparent;border-radius:10px;background-clip:padding-box}
 ::-webkit-scrollbar-thumb:hover{background:var(--dim);border:2px solid transparent;background-clip:padding-box}
-
-/* Ambient scene */
-.app-backdrop{position:fixed;inset:0;overflow:hidden;pointer-events:none;z-index:0}
-.app-backdrop::before{
-  content:'';position:absolute;inset:-38%;opacity:.13;filter:blur(115px);mix-blend-mode:screen;
-  background:conic-gradient(from 40deg at 50% 50%,transparent 0 13%,var(--accent) 19%,transparent 29% 53%,var(--accent2) 62%,transparent 72% 100%);
-  animation:aurora-spin 34s linear infinite;
-}
-.app-backdrop::after{
-  content:'';position:absolute;inset:-25% 0;
-  background:linear-gradient(115deg,transparent 22%,color-mix(in srgb,var(--accent2) 5%,transparent) 38%,transparent 52%);
-  transform:translateX(-58%);animation:sky-sweep 12s ease-in-out infinite;
-}
-.app-backdrop .orb{position:absolute;border-radius:50%;filter:blur(90px);opacity:.2;animation:orb-float 16s ease-in-out infinite alternate;will-change:transform}
-.orb-a{width:560px;height:560px;left:-220px;top:-270px;background:var(--accent)}
-.orb-b{width:480px;height:480px;right:-160px;bottom:-240px;background:var(--accent2);animation-delay:-6s!important}
-.grid-glow{
-  position:absolute;inset:0;
-  background-image:linear-gradient(color-mix(in srgb,var(--fg) 2.8%,transparent) 1px,transparent 1px),linear-gradient(90deg,color-mix(in srgb,var(--fg) 2.8%,transparent) 1px,transparent 1px);
-  background-size:42px 42px;
-  mask-image:linear-gradient(to bottom,black,transparent 90%);
-  animation:grid-drift 18s linear infinite;
-}
-@keyframes orb-float{to{transform:translate3d(42px,28px,0) scale(1.08)}}
-@keyframes aurora-spin{to{transform:rotate(1turn) scale(1.08)}}
-@keyframes sky-sweep{0%,22%{transform:translateX(-58%)}72%,100%{transform:translateX(62%)}}
-@keyframes grid-drift{to{background-position:42px 42px}}
 
 /* App shell */
 .shell{
@@ -264,10 +234,11 @@ button:focus-visible,[role="button"]:focus-visible,[role="checkbox"]:focus-visib
 .metric::after{content:'';position:absolute;right:-16px;bottom:-28px;width:66px;height:66px;border:1px solid color-mix(in srgb,var(--metric-color,var(--accent)) 22%,transparent);border-radius:50%}
 .metric:hover{transform:translateY(-4px) scale(1.012);border-color:color-mix(in srgb,var(--metric-color,var(--accent)) 62%,var(--line));background:color-mix(in srgb,var(--surface2) 72%,transparent);box-shadow:0 14px 30px color-mix(in srgb,var(--metric-color,var(--accent)) 10%,transparent),inset 0 1px 0 color-mix(in srgb,var(--fg) 7%,transparent)}
 .metric:nth-child(2){--metric-color:var(--accent2)}.metric:nth-child(3){--metric-color:var(--ok)}.metric:nth-child(4){--metric-color:var(--warn)}.metric:nth-child(5){--metric-color:var(--prompt)}
-.metric small{color:var(--dim);font-size:13px;font-weight:800}.metric strong{margin-top:5px;color:var(--fg);font-size:27px;line-height:1;font-variant-numeric:tabular-nums;letter-spacing:-.6px;text-shadow:0 0 22px color-mix(in srgb,var(--metric-color,var(--accent)) 25%,transparent)}.metric strong span{margin-left:4px;color:var(--muted);font-size:13px;font-weight:700;letter-spacing:0;text-shadow:none}
+.metric small{color:var(--dim);font-size:13px;font-weight:800}.metric strong{margin-top:5px;color:var(--fg);font-size:27px;line-height:1;font-variant-numeric:tabular-nums;letter-spacing:-.6px;text-shadow:0 0 22px color-mix(in srgb,var(--metric-color,var(--accent)) 25%,transparent)}.metric-number{display:inline-block;min-width:.55em;transform-origin:50% 72%}.metric-unit{margin-left:4px;color:var(--muted);font-size:13px;font-weight:700;letter-spacing:0;text-shadow:none}.metric-rolling .metric-number{animation:metric-roll-pop .42s cubic-bezier(.2,.75,.25,1)}
 .matrix-panel{flex:1;display:flex;min-height:0;overflow:hidden;background:color-mix(in srgb,var(--surface) 62%,transparent);border:1px solid var(--line);border-radius:16px;box-shadow:0 18px 42px color-mix(in srgb,var(--shadow) 42%,transparent),inset 0 1px 0 color-mix(in srgb,var(--fg) 5%,transparent)}
 @keyframes summary-flow{0%,100%{background-position:0 50%}50%{background-position:100% 50%}}
 @keyframes summary-sheen{0%,38%{transform:translateX(-100%)}68%,100%{transform:translateX(100%)}}
+@keyframes metric-roll-pop{0%{opacity:.48;transform:translateY(8px) scale(.94);filter:blur(1px)}52%{opacity:1;transform:translateY(-2px) scale(1.035);filter:none}100%{transform:none}}
 
 /* Planning matrix */
 .twrap{flex:1;width:100%;max-width:100%;min-height:0;overflow:auto;scrollbar-gutter:stable;background:color-mix(in srgb,var(--bg) 34%,transparent)}
@@ -349,7 +320,7 @@ button:focus-visible,[role="button"]:focus-visible,[role="checkbox"]:focus-visib
   .bodywrap{flex-direction:column}.side{width:100%;flex-basis:auto;overflow:visible;display:grid;grid-template-columns:1fr 1fr;align-items:stretch}.side-intro{grid-column:1/-1;max-width:580px}.side-wms,.side-status,.side-spacer{grid-column:1/-1}.side-spacer{display:none}.side-wms .wms-log{max-height:180px}.term{min-height:660px}.out{overflow:hidden}
 }
 @media(max-width:650px){
-  .shell{padding:8px;gap:8px}.app-header{gap:10px;padding:10px}.brand{min-width:0}.header-actions{width:100%;margin-left:0}.header-actions .bb{flex:1;padding:0 9px}.header-actions .theme{flex:0 0 46px}.side{padding:14px;grid-template-columns:1fr}.side-intro,.side-wms,.side-status{grid-column:auto}
+  .shell{padding:8px;gap:8px}.app-header{gap:10px;padding:10px}.brand{min-width:0}.header-actions{width:100%;margin-left:0}.header-actions .bb{flex:1;padding:0 9px}.header-actions .theme{flex:0 0 46px;min-width:46px}.side{padding:14px;grid-template-columns:1fr}.side-intro,.side-wms,.side-status{grid-column:auto}
   .out{padding:9px}.metric-grid{grid-template-columns:1fr 1fr}.metric{min-width:0}
 }
 @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
@@ -360,11 +331,6 @@ button:focus-visible,[role="button"]:focus-visible,[role="checkbox"]:focus-visib
 </style>
 </head>
 <body data-theme="dracula">
-<div class="app-backdrop" aria-hidden="true">
-  <span class="orb orb-a"></span>
-  <span class="orb orb-b"></span>
-  <span class="grid-glow"></span>
-</div>
 <div class="shell">
   <header class="app-header">
     <div class="brand"><strong>波次规划工具</strong></div>
@@ -2071,6 +2037,58 @@ if (typeof module !== 'undefined' && module.exports) {
     if (msg) statusTimer = setTimeout(function () { el.textContent = ''; el.className = 'status'; }, 5000);
   }
 
+  /* ---------- 纯视觉反馈（不参与订单、渠道与分段计算） ---------- */
+  var reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  function metricMarkup(id, value, suffix) {
+    return '<strong id="' + id + '" data-roll-value="' + value + '"><span class="metric-number">' + value +
+      '</span><span class="metric-unit">' + suffix + '</span></strong>';
+  }
+  function collectMetricValues() {
+    var values = {};
+    Array.prototype.forEach.call(document.querySelectorAll('#dash [data-roll-value]'), function (el) {
+      values[el.id] = Number(el.dataset.rollValue) || 0;
+    });
+    return values;
+  }
+  function animateMetric(el, target, fromValue) {
+    if (!el) return;
+    target = Math.max(0, Math.round(Number(target) || 0));
+    var numberEl = el.querySelector('.metric-number');
+    if (!numberEl) return;
+    var current = fromValue == null ? Number(numberEl.textContent) : Number(fromValue);
+    if (!isFinite(current)) current = target;
+    current = Math.max(0, Math.round(current));
+    el.dataset.rollValue = String(target);
+    if (el._metricFrame) cancelAnimationFrame(el._metricFrame);
+    if (reduceMotion || current === target) {
+      numberEl.textContent = String(target);
+      return;
+    }
+    var started = performance.now();
+    var duration = 460;
+    el.classList.remove('metric-rolling');
+    void el.offsetWidth;
+    el.classList.add('metric-rolling');
+    function frame(now) {
+      if (!el.isConnected) return;
+      var p = Math.min(1, (now - started) / duration);
+      var eased = 1 - Math.pow(1 - p, 3);
+      numberEl.textContent = String(Math.round(current + (target - current) * eased));
+      if (p < 1) el._metricFrame = requestAnimationFrame(frame);
+      else {
+        el._metricFrame = null;
+        numberEl.textContent = String(target);
+        setTimeout(function () { if (el.isConnected) el.classList.remove('metric-rolling'); }, 60);
+      }
+    }
+    el._metricFrame = requestAnimationFrame(frame);
+  }
+  function animateRenderedMetrics(previous) {
+    Array.prototype.forEach.call(document.querySelectorAll('#dash [data-roll-value]'), function (el) {
+      var target = Number(el.dataset.rollValue) || 0;
+      animateMetric(el, target, Object.prototype.hasOwnProperty.call(previous, el.id) ? previous[el.id] : 0);
+    });
+  }
   /* ---------- 导入 ---------- */
   function clearData() {
     var keepN = state.modes.normal.unified;
@@ -2290,11 +2308,11 @@ if (typeof module !== 'undefined' && module.exports) {
     return '<section class="dash-summary"><div class="summary-title"><strong>规划概览</strong><span>' +
       (state.merged ? '渠道归并' : '渠道拆分') + '</span></div>' +
       '<div class="metric-grid">' +
-        '<div class="metric"><small>导入订单</small><strong id="totalOrderMetric">' + state.records.length + '<span>单</span></strong></div>' +
-        '<div class="metric"><small>激活订单</small><strong id="selectedOrderMetric">' + selectedOrders + '<span>单</span></strong></div>' +
-        '<div class="metric"><small>激活波次</small><strong id="selectedWaveMetric">' + selectedWaves + '<span>波</span></strong></div>' +
-        '<div class="metric"><small>活跃SKU</small><strong id="selectedSkuMetric">' + selectedSkus + '<span>个</span></strong></div>' +
-        '<div class="metric"><small>活跃渠道</small><strong id="selectedChannelMetric">' + selectedChans + '<span>/' + activeChans.length + '</span></strong></div>' +
+        '<div class="metric"><small>导入订单</small>' + metricMarkup('totalOrderMetric', state.records.length, '单') + '</div>' +
+        '<div class="metric"><small>激活订单</small>' + metricMarkup('selectedOrderMetric', selectedOrders, '单') + '</div>' +
+        '<div class="metric"><small>激活波次</small>' + metricMarkup('selectedWaveMetric', selectedWaves, '波') + '</div>' +
+        '<div class="metric"><small>活跃SKU</small>' + metricMarkup('selectedSkuMetric', selectedSkus, '个') + '</div>' +
+        '<div class="metric"><small>活跃渠道</small>' + metricMarkup('selectedChannelMetric', selectedChans, '/' + activeChans.length) + '</div>' +
       '</div></section>' +
       '<section class="matrix-panel"><div class="twrap"><table class="pt">' +
       '<colgroup><col style="width:10%"><col style="width:6%"><col style="width:6%">' +
@@ -2305,7 +2323,9 @@ if (typeof module !== 'undefined' && module.exports) {
 
   /* ---------- 渲染（保持滚动位置，结构稳定；空数据也显示表格骨架） ---------- */
   function renderDash() {
+    var previousMetrics = collectMetricValues();
     $('dash').innerHTML = dashHtml();
+    animateRenderedMetrics(previousMetrics);
   }
   function renderBar() {
     var ok = typeof XLSX !== 'undefined';
@@ -2386,22 +2406,24 @@ if (typeof module !== 'undefined' && module.exports) {
       if (c) c.innerHTML = '<span class="wc">' + st[t].waves + '波</span>/<span class="oc">' + st[t].orders + '单</span>';
     });
     var selectedOrderMetric = $('selectedOrderMetric');
-    if (selectedOrderMetric) selectedOrderMetric.innerHTML = effectiveOrderSum() + '<span>单</span>';
+    if (selectedOrderMetric) animateMetric(selectedOrderMetric, effectiveOrderSum());
     var selectedWaveMetric = $('selectedWaveMetric');
     if (selectedWaveMetric) {
       var waves = TYPE_ORDER.reduce(function (n, t) { return n + st[t].waves; }, 0);
-      selectedWaveMetric.innerHTML = waves + '<span>波</span>';
+      animateMetric(selectedWaveMetric, waves);
     }
     var selectedSkuMetric = $('selectedSkuMetric');
     if (selectedSkuMetric) {
       var m = ms();
-      selectedSkuMetric.innerHTML = selectedSkuCount(curAnalysis(), state.records, m.sel.channels, m.sel.segs) + '<span>个</span>';
+      animateMetric(selectedSkuMetric, selectedSkuCount(curAnalysis(), state.records, m.sel.channels, m.sel.segs));
     }
     var selectedChannelMetric = $('selectedChannelMetric');
     if (selectedChannelMetric) {
       var active = residentChannels(curAnalysis());
       var selected = active.filter(function (ch) { return ms().sel.channels.has(ch.id); }).length;
-      selectedChannelMetric.innerHTML = selected + '<span>/' + active.length + '</span>';
+      var unit = selectedChannelMetric.querySelector('.metric-unit');
+      if (unit) unit.textContent = '/' + active.length;
+      animateMetric(selectedChannelMetric, selected);
     }
   }
   function setGlyphState(el, state) {
@@ -2558,8 +2580,9 @@ if (typeof module !== 'undefined' && module.exports) {
     var m = state.modes.normal;
     var current = getAnalysis('normal');
     var ids = orderedChannels(current, m.order).map(function (ch) { return ch.id; });
+    var evolving = !state.ordinaryEvolved;
     clearOrdinarySegSelection(m);
-    if (!state.ordinaryEvolved) {
+    if (evolving) {
       state.ordinaryEvolved = true;
       ids = ids.map(function (id) { return id === '未识别' ? '普通' : id; });
       if (ids.indexOf('普通') < 0) ids.push('普通');
@@ -2643,7 +2666,9 @@ if (typeof module !== 'undefined' && module.exports) {
   function bindEvents() {
     $('btnImport').addEventListener('click', function () { $('fileInput').click(); });
     $('fileInput').addEventListener('change', function () {
-      if (this.files && this.files[0]) handleFile(this.files[0]);
+      if (this.files && this.files[0]) {
+        handleFile(this.files[0]);
+      }
       this.value = '';
     });
     $('btnExport').addEventListener('click', doExport);
@@ -3334,6 +3359,7 @@ if (typeof module !== 'undefined' && module.exports) {
     wmsRestore: wmsRestore,
     curAnalysis: curAnalysis,
     getAnalysis: getAnalysis,
+    toggleOrdinaryEvolution: toggleOrdinaryEvolution,
     buildExportBuffer: wmsBuildExportBuffer,
     buildExportNow: function () {
       return currentExportData();
