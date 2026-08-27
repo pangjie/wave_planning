@@ -1,7 +1,50 @@
+import sqlite3
+
 import pytest
 
 from app.automation import common
 from app.core.config import Settings
+
+
+def test_reset_browser_download_state_preserves_login_and_browsing_data(
+    tmp_path,
+) -> None:
+    """Only Chrome download metadata is reset; login/site state stays intact."""
+    default = tmp_path / "Default"
+    default.mkdir()
+    shared = default / "shared_proto_db"
+    shared.mkdir()
+    (shared / "000003.log").write_bytes(b"021_download")
+    (default / "Cookies").write_bytes(b"login-cookie")
+
+    history = default / "History"
+    with sqlite3.connect(history) as connection:
+        connection.execute("CREATE TABLE downloads (id INTEGER)")
+        connection.execute("CREATE TABLE downloads_url_chains (id INTEGER)")
+        connection.execute("CREATE TABLE downloads_slices (id INTEGER)")
+        connection.execute("CREATE TABLE urls (id INTEGER)")
+        connection.execute("INSERT INTO downloads VALUES (1)")
+        connection.execute("INSERT INTO downloads_url_chains VALUES (1)")
+        connection.execute("INSERT INTO downloads_slices VALUES (1)")
+        connection.execute("INSERT INTO urls VALUES (99)")
+
+    common.reset_browser_download_state(tmp_path)
+
+    assert not shared.exists()
+    assert (default / "Cookies").read_bytes() == b"login-cookie"
+    with sqlite3.connect(history) as connection:
+        assert connection.execute("SELECT count(*) FROM downloads").fetchone() == (0,)
+        assert connection.execute(
+            "SELECT count(*) FROM downloads_url_chains"
+        ).fetchone() == (0,)
+        assert connection.execute(
+            "SELECT count(*) FROM downloads_slices"
+        ).fetchone() == (0,)
+        assert connection.execute("SELECT id FROM urls").fetchone() == (99,)
+
+
+def test_reset_browser_download_state_allows_missing_profile(tmp_path) -> None:
+    common.reset_browser_download_state(tmp_path)
 
 
 class _FakeContext:

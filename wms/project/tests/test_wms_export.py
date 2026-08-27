@@ -3,7 +3,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.automation.common import AutomationError
 from app.automation.export_task_center import ExportTaskCenter, TaskCenterItem
 from app.automation.wms_export import WmsExportAutomation
 from app.core.config import Settings
@@ -113,72 +112,6 @@ def test_download_path_is_sanitized_and_does_not_overwrite(tmp_path) -> None:
     assert target != existing
     assert target.suffix == ".xlsx"
 
-@pytest.mark.asyncio
-async def test_await_disk_download_picks_new_file(tmp_path) -> None:
-    import asyncio
-    import time
-
-    from app.automation.export_task_center import ExportTaskCenter
-
-    settings = Settings.from_environment().model_copy(update={"downloads_dir": tmp_path})
-    center = ExportTaskCenter(settings, settings.load_automation())
-    (tmp_path / "old.xlsx").write_bytes(b"old")
-    before = center._snapshot_downloads_dir()
-
-    async def writer():
-        await asyncio.sleep(0.3)
-        (tmp_path / "ParcelOutbound_20260821000000.xlsx").write_bytes(b"x" * 500)
-
-    task = asyncio.create_task(writer())
-    found = await center._await_disk_download(time.monotonic(), before)
-    await task
-    assert found.name == "ParcelOutbound_20260821000000.xlsx"
-
-
-@pytest.mark.asyncio
-async def test_await_disk_download_times_out_when_no_file(tmp_path) -> None:
-    import time
-
-    from app.automation.common import AutomationError
-    from app.automation.export_task_center import ExportTaskCenter
-
-    settings = Settings.from_environment().model_copy(
-        update={
-            "downloads_dir": tmp_path,
-            "automation_config_path": Settings.from_environment().automation_config_path,
-        }
-    )
-    cfg = settings.load_automation().model_copy(deep=True)
-    cfg.timeouts_ms.task_completion = 800
-    center = ExportTaskCenter(settings, cfg)
-
-    before = center._snapshot_downloads_dir()
-    with pytest.raises(AutomationError, match="既未收到下载事件"):
-        await center._await_disk_download(time.monotonic(), before)
-
-
-@pytest.mark.asyncio
-async def test_await_disk_download_ignores_old_and_nonprefix_files(tmp_path) -> None:
-    import asyncio
-    import time
-
-    from app.automation.export_task_center import ExportTaskCenter
-
-    settings = Settings.from_environment().model_copy(update={"downloads_dir": tmp_path})
-    center = ExportTaskCenter(settings, settings.load_automation())
-    (tmp_path / "other_20260821000000.xlsx").write_bytes(b"x" * 100)  # 前缀不符
-    before = center._snapshot_downloads_dir()
-
-    async def writer():
-        await asyncio.sleep(0.4)
-        (tmp_path / "ParcelOutbound_20260821000001.xlsx").write_bytes(b"x" * 300)
-
-    task = asyncio.create_task(writer())
-    found = await center._await_disk_download(time.monotonic(), before)
-    await task
-    # 只应收到前缀匹配的新文件，旧文件与非前缀文件均被忽略
-    assert found.name == "ParcelOutbound_20260821000001.xlsx"
-
 
 def _fake_task_page(save_side_effect):
     """download() 流程所需页面替身：任务中心行 + 下载按钮 + expect_download。"""
@@ -233,15 +166,14 @@ def _fake_task_page(save_side_effect):
 
     page.locator = MagicMock(side_effect=_locator)
     page.goto = AsyncMock()
-    return page
+    return page, download_obj
 
 
 def _download_center(tmp_path):
     settings = Settings.from_environment().model_copy(update={"downloads_dir": tmp_path})
     center = ExportTaskCenter(settings, settings.load_automation())
     center._open = AsyncMock()
-    center._close_safe = AsyncMock()
-    center._snapshot_downloads_dir = MagicMock(return_value=set())
+    center._close = AsyncMock()
     center._unique_download_path = MagicMock(
         return_value=tmp_path / "ParcelOutbound_20260826000000.xlsx"
     )
@@ -249,31 +181,41 @@ def _download_center(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_download_raises_interrupted_when_page_closes(tmp_path) -> None:
-    """回归：WMS 关页中断下载时，download() 抛可恢复信号（换新浏览器重试由导出流程负责）。"""
-    from app.automation.export_task_center import DownloadInterruptedError
+async def test_download_uses_standard_playwright_save(tmp_path) -> None:
+    """下载流程只使用 Playwright 的标准事件与 save_as。"""
+    order: list[str] = []
+
+    async def save(target: Path) -> None:
+        target.write_bytes(b"downloaded")
+        order.append("saved")
+
+    async def close(_page) -> None:
+        order.append("closed")
 
     center = _download_center(tmp_path)
-    page = _fake_task_page([RuntimeError("Download interrupted by page close")])
+    center._close = AsyncMock(side_effect=close)
+    page, download_obj = _fake_task_page(save)
     task = TaskCenterItem(
         filename="ParcelOutbound_20260826000000.xlsx",
         created_at="t", status="", icon_class="", downloadable=True,
     )
 
-    async def progress(stage: str, msg: str) -> None:
-        pass
+    target = await center.download(page, task)
 
-    with pytest.raises(DownloadInterruptedError):
-        await center.download(page, task, progress)
+    assert target.is_file()
+    assert order == ["saved", "closed"]
+    download_obj.save_as.assert_awaited_once_with(target)
 
 
 @pytest.mark.asyncio
-async def test_run_retries_download_in_new_browser(tmp_path, monkeypatch) -> None:
-    """回归：浏览器被 WMS 关页杀死后，导出流程换新浏览器只补下载，不重复提交导出。"""
+async def test_run_uses_one_headless_context_until_download_completes(
+    tmp_path, monkeypatch
+) -> None:
+    """提交和下载始终处于同一个无头会话，完成后才退出上下文。"""
     import app.automation.wms_export as mod
-    from app.automation.export_task_center import DownloadInterruptedError
 
     automation = make_automation()
+    target = tmp_path / "ParcelOutbound_20260826000000.xlsx"
     task = TaskCenterItem(
         filename="ParcelOutbound_20260826000000.xlsx",
         created_at="t", status="", icon_class="", downloadable=True,
@@ -282,97 +224,53 @@ async def test_run_retries_download_in_new_browser(tmp_path, monkeypatch) -> Non
         automation, "_prepare_and_submit",
         AsyncMock(return_value=("已提交。", "渠道拆分", task)),
     )
-    monkeypatch.setattr(
-        automation, "_resume_download",
-        AsyncMock(return_value=tmp_path / "ParcelOutbound_20260826000000.xlsx"),
-    )
-    monkeypatch.setattr(
-        automation.task_center, "download",
-        AsyncMock(side_effect=[
-            DownloadInterruptedError(RuntimeError("Target closed")),
-            tmp_path / "ParcelOutbound_20260826000000.xlsx",
-        ]),
-    )
-
     opens = 0
+    context_order: list[str] = []
+    page = MagicMock()
+    page.url = "https://wms.xlwms.com/outbound/parcel"
+
+    async def download_once(*args, **kwargs):
+        context_order.append("download")
+        return target
+
+    monkeypatch.setattr(
+        automation.task_center,
+        "download",
+        AsyncMock(side_effect=download_once),
+    )
 
     class _FakeBrowserCM:
         async def __aenter__(self):
-            nonlocal opens
-            opens += 1
-            return MagicMock()
+            context_order.append("enter")
+            return self
 
         async def __aexit__(self, *exc):
+            context_order.append("exit")
             return False
 
-    monkeypatch.setattr(
-        mod, "open_browser_context",
-        lambda *a, **kw: _FakeBrowserCM(),
-    )
-    monkeypatch.setattr(mod, "first_page", AsyncMock(return_value=MagicMock()))
-    calls: list[tuple[str, str]] = []
+    def open_context(*args, **kwargs):
+        nonlocal opens
+        opens += 1
+        return _FakeBrowserCM()
 
+    monkeypatch.setattr(mod, "open_browser_context", open_context)
+    reset_download_state = MagicMock()
+    monkeypatch.setattr(mod, "reset_browser_download_state", reset_download_state)
+    monkeypatch.setattr(
+        mod,
+        "first_page",
+        AsyncMock(return_value=page),
+    )
     async def progress(stage: str, msg: str) -> None:
-        calls.append((stage, msg))
+        pass
 
     result = await automation.run(progress, headless=True)
 
-    assert result.downloaded_file.endswith("ParcelOutbound_20260826000000.xlsx")
-    assert opens == 2  # 第二次进入新浏览器
-    assert automation._prepare_and_submit.await_count == 1  # 导出只提交一次
-    assert any(stage == "download_retry" for stage, _ in calls), calls
-
-
-@pytest.mark.asyncio
-async def test_run_stops_with_manual_download_hint_when_retry_also_interrupted(
-    tmp_path, monkeypatch
-) -> None:
-    """回归：换新浏览器重试后仍被关页中断 → 停止并明确提示手动下载。"""
-    import app.automation.wms_export as mod
-    from app.automation.export_task_center import DownloadInterruptedError
-
-    automation = make_automation()
-    task = TaskCenterItem(
-        filename="ParcelOutbound_20260826000000.xlsx",
-        created_at="t", status="", icon_class="", downloadable=True,
+    assert opens == 1
+    assert context_order == ["enter", "download", "exit"]
+    assert result.downloaded_file == str(target)
+    reset_download_state.assert_called_once_with(
+        automation.settings.browser_profile_dir
     )
-    monkeypatch.setattr(
-        automation, "_prepare_and_submit",
-        AsyncMock(return_value=("已提交。", "渠道拆分", task)),
-    )
-    monkeypatch.setattr(
-        automation, "_resume_download",
-        AsyncMock(side_effect=DownloadInterruptedError(RuntimeError("Target closed again"))),
-    )
-    monkeypatch.setattr(
-        automation.task_center, "download",
-        AsyncMock(side_effect=DownloadInterruptedError(RuntimeError("Target closed"))),
-    )
-
-    class _FakeBrowserCM:
-        async def __aenter__(self):
-            return MagicMock()
-
-        async def __aexit__(self, *exc):
-            return False
-
-    monkeypatch.setattr(mod, "open_browser_context", lambda *a, **kw: _FakeBrowserCM())
-    monkeypatch.setattr(mod, "first_page", AsyncMock(return_value=MagicMock()))
-
-    async def progress(stage: str, msg: str) -> None:
-        pass
-
-    with pytest.raises(AutomationError, match="请从任务中心手动下载"):
-        await automation.run(progress, headless=True)
-
-
-@pytest.mark.asyncio
-async def test_close_safe_swallows_closed_page() -> None:
-    """回归：弹层清理遇到页面已关闭时静默跳过，不掩盖保存阶段的真实错误。"""
-    settings = Settings.from_environment()
-    center = ExportTaskCenter(settings, settings.load_automation())
-    center._close = AsyncMock(
-        side_effect=RuntimeError("Target page, context or browser has been closed")
-    )
-
-    await center._close_safe(MagicMock())  # 不抛异常
+    assert automation._prepare_and_submit.await_count == 1
+    assert automation.task_center.download.await_count == 1

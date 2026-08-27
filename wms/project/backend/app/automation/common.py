@@ -5,6 +5,8 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 import re
+import shutil
+import sqlite3
 
 from playwright.async_api import (
     BrowserContext,
@@ -82,6 +84,46 @@ def normalize_wave_nos(raw_items: list[str]) -> list[str]:
         seen.add(wave_no)
         out.append(wave_no)
     return out
+
+
+def reset_browser_download_state(profile_dir: Path) -> None:
+    """Remove Chrome's persisted download state without touching login data.
+
+    Chrome 152 on macOS can crash on the second headless download when the
+    persistent profile still contains the previous download in both History and
+    shared_proto_db (the ``021_download`` namespace). Cookies, local/session
+    storage, saved logins and site permissions live elsewhere and are preserved.
+    """
+    default_dir = profile_dir / "Default"
+    if not default_dir.is_dir():
+        return
+
+    shared_proto_db = default_dir / "shared_proto_db"
+    try:
+        if shared_proto_db.is_symlink() or shared_proto_db.is_file():
+            shared_proto_db.unlink()
+        elif shared_proto_db.is_dir():
+            shutil.rmtree(shared_proto_db)
+    except OSError as exc:
+        raise AutomationError(f"无法清理浏览器下载元数据库：{exc}") from exc
+
+    history = default_dir / "History"
+    if not history.is_file():
+        return
+    download_tables = ("downloads_slices", "downloads_url_chains", "downloads")
+    try:
+        with sqlite3.connect(history, timeout=5) as connection:
+            existing = {
+                str(row[0])
+                for row in connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                )
+            }
+            for table in download_tables:
+                if table in existing:
+                    connection.execute(f"DELETE FROM {table}")
+    except sqlite3.Error as exc:
+        raise AutomationError(f"无法清理浏览器下载历史：{exc}") from exc
 
 
 @asynccontextmanager

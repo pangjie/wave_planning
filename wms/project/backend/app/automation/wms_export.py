@@ -12,15 +12,12 @@ from app.automation.common import (
     ProgressCallback,
     first_page,
     open_browser_context,
+    reset_browser_download_state,
     resolve_headless,
     wait_for_input_value,
     wait_for_loading,
 )
-from app.automation.export_task_center import (
-    DownloadInterruptedError,
-    ExportTaskCenter,
-    TaskCenterItem,
-)
+from app.automation.export_task_center import ExportTaskCenter, TaskCenterItem
 from app.core.config import AutomationConfig, Settings
 
 
@@ -53,56 +50,29 @@ class WmsExportAutomation:
         browser_label = "无头" if effective_headless else "有头"
         await progress(
             "launching",
-            f"正在以{browser_label}模式启动专用浏览器；首次使用请先通过有头模式登录。",
+            f"正在以{browser_label}模式启动专用浏览器。",
         )
-        current_page: Page | None = None
+        reset_browser_download_state(self.settings.browser_profile_dir)
         async with open_browser_context(
             self.settings,
             headless=effective_headless,
             downloads_dir=self.settings.downloads_dir,
         ) as context:
             page = await first_page(context)
-            current_page = page
             message, selected_template, task = await self._prepare_and_submit(
                 page, progress
             )
             await progress("downloading", f"导出已完成，正在下载 {task.filename}")
-            try:
-                downloaded_file = await self.task_center.download(page, task, progress)
-            except DownloadInterruptedError as exc:
-                # WMS 关页连带杀死了整个浏览器：换新浏览器只补下载，绝不重复提交导出
-                await progress(
-                    "download_retry",
-                    "WMS 页面在下载时自行关闭导致下载中断，正在重新打开浏览器并再次下载"
-                    "（不重复提交导出）。",
-                )
-                async with open_browser_context(
-                    self.settings,
-                    headless=effective_headless,
-                    downloads_dir=self.settings.downloads_dir,
-                ) as context2:
-                    page2 = await first_page(context2)
-                    current_page = page2
-                    try:
-                        downloaded_file = await self._resume_download(
-                            page2, task, progress
-                        )
-                    except DownloadInterruptedError as exc2:
-                        raise AutomationError(
-                            f"WMS 页面在下载时自行关闭，重试后仍未拿到完整文件 "
-                            f"{task.filename}：{exc2.__cause__ or exc2}。"
-                            "请从任务中心手动下载。"
-                        ) from exc2
-        assert current_page is not None
-        return ExportResult(
-            mode="export",
-            template=selected_template,
-            current_url=current_page.url,
-            message=f"{message} 文件已保存到 {downloaded_file}",
-            completed_at=datetime.now().astimezone().isoformat(),
-            task_filename=task.filename,
-            downloaded_file=str(downloaded_file),
-        )
+            downloaded_file = await self.task_center.download(page, task)
+            return ExportResult(
+                mode="export",
+                template=selected_template,
+                current_url=page.url,
+                message=f"{message} 文件已保存到 {downloaded_file}",
+                completed_at=datetime.now().astimezone().isoformat(),
+                task_filename=task.filename,
+                downloaded_file=str(downloaded_file),
+            )
 
     async def _prepare_and_submit(
         self,
@@ -176,38 +146,6 @@ class WmsExportAutomation:
             progress,
         )
         return submission_message, selected_template, task
-
-    async def _resume_download(
-        self,
-        page: Page,
-        task: TaskCenterItem,
-        progress: ProgressCallback,
-    ) -> Path:
-        """重试下载：导出已提交成功，仅在新浏览器中重新打开订单页并接收文件。"""
-        cfg = self.config
-        selectors = cfg.selectors
-        timeouts = cfg.timeouts_ms
-
-        await progress("navigating", f"正在重新打开 {cfg.target_url}")
-        await page.goto(cfg.target_url, wait_until="domcontentloaded", timeout=timeouts.navigation)
-        page_export = page.locator(selectors.page_export_button).filter(has_text="导出")
-        try:
-            await page_export.wait_for(state="visible", timeout=12000)
-        except PlaywrightTimeoutError:
-            await progress(
-                "waiting_login",
-                "尚未检测到业务页面。请在自动打开的浏览器中登录，登录后保持窗口开启。",
-            )
-            try:
-                await page_export.wait_for(state="visible", timeout=timeouts.login)
-            except PlaywrightTimeoutError as exc:
-                raise AutomationError("等待登录超时，未找到页面上的“导出”按钮。") from exc
-        await wait_for_loading(
-            page, selectors.loading_mask, timeouts.navigation,
-            "重试前页面数据加载超时，仍检测到加载遮罩。",
-        )
-        await progress("downloading", f"正在重新下载 {task.filename}（不重复提交导出）")
-        return await self.task_center.download(page, task, progress)
 
     async def _ensure_template(self, dialog: Locator, page: Page) -> str:
         cfg = self.config
