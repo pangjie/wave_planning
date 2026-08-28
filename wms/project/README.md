@@ -85,11 +85,28 @@
 
 ```bash
 ./scripts/setup.sh
-./scripts/start.sh
+./scripts/start.sh start
 ```
 
-访问 [http://127.0.0.1:8000](http://127.0.0.1:8000)。
-如需临时使用其他端口，可运行 `./scripts/start.sh 8001`。
+服务默认在后台运行，访问 [http://127.0.0.1:8000](http://127.0.0.1:8000)。启动脚本会自动
+保存 PID、追加日志、检查端口占用并等待 `/api/health` 就绪，因此不需要再在命令外层添加
+`nohup` 或 `&`。常用命令：
+
+```bash
+./scripts/start.sh start --ip 0.0.0.0 --port 8080
+./scripts/start.sh status --port 8080
+./scripts/start.sh restart --ip 0.0.0.0 --port 8080
+./scripts/start.sh stop --port 8080
+```
+
+支持的选项为 `--ip`、`--port`、`--log` 和 `--pid-file`；相对日志及 PID 路径以项目根目录
+为基准。默认日志为 `logs/service-PORT.log`，默认 PID 文件为 `data/service-PORT.pid`。
+命令行参数优先于环境变量 `HOST` / `PORT`。旧式调用 `./scripts/start.sh 8001` 仍然可用，
+等同于 `start --port 8001`。
+
+绑定 `0.0.0.0` 会允许局域网设备访问当前没有登录认证的任务接口；只应在可信网络或已配置
+防火墙访问限制时使用。仅本机使用时请保持默认的 `127.0.0.1`。
+
 后端开发模式（--reload）：
 
 ```bash

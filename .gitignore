@@ -17,6 +17,9 @@ wms/project/data/browser-profile/
 wms/project/data/jobs.json
 wms/project/data/wave-records.json
 wms/project/data/step-control.json
+wms/project/data/service-*.pid
+wms/project/logs/
+wms/project/nohup.out
 wms/project/downloads/*
 wms/project/outputs/*
 
