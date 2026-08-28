@@ -1,4 +1,14 @@
 <body data-theme="dracula">
+<script>
+(function () {
+  try {
+    var savedTheme = localStorage.getItem('wave-planner-theme');
+    if (/^(dracula|yellow|jade|reddust|seaclear)$/.test(savedTheme || '')) {
+      document.body.setAttribute('data-theme', savedTheme);
+    }
+  } catch (e) { }
+})();
+</script>
 <div class="shell">
   <header class="app-header">
     <div class="brand"><strong>波次规划工具</strong></div>

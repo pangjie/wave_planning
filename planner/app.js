@@ -7,6 +7,8 @@
   'use strict';
 
   var $ = function (id) { return document.getElementById(id); };
+  var THEME_STORAGE_KEY = 'wave-planner-theme';
+  var THEME_IDS = ['dracula', 'yellow', 'jade', 'reddust', 'seaclear'];
   function esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
       return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
@@ -795,12 +797,29 @@
     $('sortModeLabel').addEventListener('click', toggleSortMode);
 
     /* 页面配置：齿轮按钮 + 配置面板（主题，列表固定向下弹出；字体固定为 Sarasa Mono SC） */
-    function applyTheme(v) {
+    function validTheme(v) {
+      return THEME_IDS.indexOf(v) >= 0 ? v : 'dracula';
+    }
+    function syncThemeControl(v) {
+      var active = null;
+      Array.prototype.forEach.call($('themeList').children, function (x) {
+        var on = x.getAttribute('data-v') === v;
+        x.classList.toggle('on', on);
+        x.setAttribute('aria-checked', on ? 'true' : 'false');
+        if (on) active = x;
+      });
+      if (active) $('themeBtn').title = '当前主题：' + active.textContent;
+    }
+    function applyTheme(v, persist) {
       /* 主题只改外观（body 属性 → CSS 变量），不触碰任何页面状态与运行中的任务 */
-      if (v) document.body.setAttribute('data-theme', v);
-      else document.body.removeAttribute('data-theme');
+      v = validTheme(v);
+      document.body.setAttribute('data-theme', v);
+      syncThemeControl(v);
       var themeMeta = document.querySelector('meta[name="theme-color"]');
       if (themeMeta) themeMeta.setAttribute('content', getComputedStyle(document.body).backgroundColor);
+      if (persist) {
+        try { localStorage.setItem(THEME_STORAGE_KEY, v); } catch (e) { }
+      }
     }
     function closeCfgLists() {
       $('themeList').hidden = true;
@@ -819,12 +838,7 @@
         var li = e.target.closest ? e.target.closest('li[data-v]') : null;
         if (!li) return;
         e.stopPropagation();
-        apply(li.getAttribute('data-v'));
-        $(btnId).title = '当前主题：' + li.textContent;
-        Array.prototype.forEach.call($(listId).children, function (x) {
-          x.classList.toggle('on', x === li);
-          x.setAttribute('aria-checked', x === li ? 'true' : 'false');
-        });
+        apply(li.getAttribute('data-v'), true);
         $(listId).hidden = true;
         $(btnId).setAttribute('aria-expanded', 'false');
       });
@@ -834,6 +848,7 @@
       });
     }
     bindCfgList('themeBtn', 'themeList', applyTheme);
+    applyTheme(document.body.getAttribute('data-theme'), false);
     document.addEventListener('click', function (e) {
       if (!(e.target.closest && e.target.closest('.cfg-wrap'))) closeCfgLists();
     });

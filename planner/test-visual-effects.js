@@ -29,7 +29,42 @@ T.withChrome(chrome, async () => {
   })()`));
   T.assert(!ambient.button, '右上角不应保留环境特效按钮');
   T.assert(!ambient.dataFx && !ambient.backdrop, '页面不应保留环境特效状态或背景场景层');
-  T.assert(ambient.backgroundImage === 'none', '页面背景必须只使用主题底色，不能加载背景图或渐变特效');
+  T.assert(ambient.backgroundImage === 'none', '页面主体不得加载背景图片');
+
+  const themeDecor = JSON.parse(await evalJs(`(function(){
+    return JSON.stringify(['dracula','yellow','jade','reddust','seaclear'].map(function(theme){
+      document.body.dataset.theme=theme;
+      var body=getComputedStyle(document.body);
+      var before=getComputedStyle(document.body,'::before');
+      var after=getComputedStyle(document.body,'::after');
+      return {theme:theme,bg:body.backgroundColor,glow:before.backgroundImage,pattern:after.backgroundImage};
+    }));
+  })()`));
+  T.assert(themeDecor.every(function(x){return x.glow !== 'none' && x.pattern !== 'none';}), '五套主题都必须具有自己的静态背景装饰');
+  T.assert(new Set(themeDecor.map(function(x){return x.bg;})).size === 5, '五套主题必须具有不同的提亮底色');
+  T.assert(new Set(themeDecor.map(function(x){return x.glow + x.pattern;})).size === 5, '五套主题的背景装饰不能完全相同');
+  await evalJs(`document.body.dataset.theme='dracula'`);
+
+  const savedTheme = JSON.parse(await evalJs(`(function(){
+    document.getElementById('themeBtn').click();
+    document.querySelector('#themeList [data-v="yellow"]').click();
+    return JSON.stringify({theme:document.body.dataset.theme,stored:localStorage.getItem('wave-planner-theme')});
+  })()`));
+  T.assert(savedTheme.theme === 'yellow' && savedTheme.stored === 'yellow', '选择主题后必须写入浏览器本地存储');
+  await send('Page.reload');
+  await poll('document.readyState', 'complete');
+  const restoredTheme = JSON.parse(await evalJs(`JSON.stringify({
+    theme:document.body.dataset.theme,
+    checked:document.querySelector('#themeList [data-v="yellow"]').getAttribute('aria-checked'),
+    menuOn:document.querySelector('#themeList [data-v="yellow"]').classList.contains('on'),
+    title:document.getElementById('themeBtn').title
+  })`));
+  T.assert(restoredTheme.theme === 'yellow' && restoredTheme.checked === 'true' && restoredTheme.menuOn, '刷新页面后必须恢复上次主题及菜单状态');
+  T.assert(restoredTheme.title.indexOf('黄天当立') >= 0, '恢复主题后按钮提示必须同步');
+  await evalJs(`(function(){
+    document.getElementById('themeBtn').click();
+    document.querySelector('#themeList [data-v="dracula"]').click();
+  })()`);
 
   await evalJs(T.importFileExpr(P.sample));
   await poll('window.__dshTest.state.records.length > 0', true);
@@ -77,6 +112,8 @@ T.withChrome(chrome, async () => {
   T.assert(evolution.evolved.links === 0 && evolution.devolved.links === 0, '普通 / 未识别进退化不得生成链接特效');
 
   console.log('✔ 环境特效按钮、状态、背景层和背景图已完全移除');
+  console.log('✔ 五套主题均使用不同的提亮底色与静态配色装饰');
+  console.log('✔ 主题选择写入本地存储，刷新后自动恢复并同步菜单状态');
   console.log('✔ 概览数字滚动正常，点击粒子层已完全移除');
   console.log('✔ 普通 / 未识别进退化功能保留，链接特效已完全移除');
 });
