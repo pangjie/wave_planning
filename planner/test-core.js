@@ -224,7 +224,10 @@ const exportState = {
 };
 a.channels.forEach(c => c.segments.forEach(s => exportState.segSelected.add(c.id + '|' + s.name)));
 const exportData = C.buildExport(a, exportState);
-assert(exportData && exportData.sheets.length === 8, '应导出 8 个工作表');
+assert(exportData && exportData.sheets.length === 9, '应导出 9 个工作表');
+assert(exportData.sheets.map(s => s.name).join(',') ===
+  '分组结果,分组结果SKU池,波次表,渠道统计,客户统计,单件SKU序列,多件SKU序列,混件SKU序列,分类SKU序列',
+  '工作表顺序不符');
 console.log('工作表顺序:', exportData.sheets.map(s => s.name).join(' → '));
 assert(exportData.filename === '波次规划' + new Date().toISOString().slice(0, 10).replace(/-/g, '') + '.xlsx', '文件名格式');
 const outPath = path.join(__dirname, 'tmp', 'test-export.xlsx');
@@ -233,7 +236,7 @@ console.log('✔ 导出工作簿已生成: ' + outPath + '（' + exportData.file
 
 /* 导出过滤 */
 const filtered = C.buildExport(a, { channelSelected: new Set(['CBT']), segSelected: new Set([...exportState.segSelected].filter(k => k.startsWith('CBT|爆品'))) });
-assert(filtered && filtered.sheets.length === 8, '过滤后仍应有 8 个 sheet');
+assert(filtered && filtered.sheets.length === 9, '过滤后仍应有 9 个 sheet');
 assert(C.buildExport(a, { channelSelected: new Set(), segSelected: exportState.segSelected }) === null, '未选渠道应返回 null');
 console.log('✔ 三层导出过滤行为正确');
 
@@ -272,10 +275,42 @@ console.log('✔ 三层导出过滤行为正确');
   assert(idx('package1trackingno./物流跟踪号') === 1, '带换行表头应识别');
   assert(hm2.skuIdx.length === 3, '应识别 3 个 SKU 列，实际 ' + hm2.skuIdx.length);
   assert(hm2.skuIdx.map(s => s.n).join(',') === '1,2,12', 'SKU 列编号顺序应为 1,2,12');
+  const customerHdr = ['Outbound Order No/出库单号', 'Client/客户', 'SKU 1 SKU', 'Shipping Carrier/物流承运商', 'Package 1 Tracking No./物流跟踪号', 'Total Qty of SKU/总数量', 'Type of order variety/订单品种类型'];
+  const customerMap = C.mapHeaders(customerHdr);
+  const customerRows = C.buildRecords([
+    ['OUT-CUSTOMER-1', '测试客户', 'SKU-CUSTOMER', 'NORMAL', '9200190417705115343541', 1, '单品单件']
+  ], customerMap);
+  assert(customerRows.records.length === 1, '新增客户列后应正常解析订单');
+  assert(customerRows.records[0].orderNo === 'OUT-CUSTOMER-1' && customerRows.records[0].sku1 === 'SKU-CUSTOMER', '客户列不得造成订单与 SKU 列错位');
+  assert(customerRows.records[0].customer === '测试客户', '客户列应写入订单记录');
+  assert(JSON.stringify(C.splitCustomer('北美客户（CUS-001）')) === JSON.stringify({ name: '北美客户', code: 'CUS-001' }), '全角括号客户应拆分名称与代码');
+  assert(JSON.stringify(C.splitCustomer('欧洲客户(EU-02)')) === JSON.stringify({ name: '欧洲客户', code: 'EU-02' }), '半角括号客户应拆分名称与代码');
+  assert(JSON.stringify(C.splitCustomer('无代码客户')) === JSON.stringify({ name: '无代码客户', code: '' }), '无括号客户应保留名称并留空代码');
+  const customerStats = C.buildCustomerStats([
+    { orderNo: 'C1', customer: '北美客户（CUS-001）', qty: 1, type: '单品单件', channelId: 'CBT', skus: ['N1'] },
+    { orderNo: 'C2', customer: '北美客户(CUS-001)', qty: 3, type: '单品多件', channelId: 'USPS', skus: ['N1', 'N2'] },
+    { orderNo: 'C3', customer: '北美客户（CUS-001）', qty: 4, type: '多品混合', channelId: '未识别', skus: ['N3', 'N4'] },
+    { orderNo: 'C4', customer: '欧洲客户（EU-02）', qty: 2, type: '单品单件', channelId: 'USPS', skus: ['E1'] },
+    { orderNo: 'C5', customer: '欧洲客户（EU-02）', qty: 5, type: '单品单件', channelId: 'SwiftX', skus: ['E1', 'E2'] },
+    { orderNo: 'C6', customer: '不应导出（NO）', qty: 99, type: '单品单件', channelId: 'CBT', skus: ['NO'] }
+  ], [{ segs: [{ orderNos: ['C1', 'C2', 'C3', 'C4', 'C5'] }] }]);
+  assert(JSON.stringify(customerStats) === JSON.stringify([
+    {
+      name: '北美客户', code: 'CUS-001', orderCount: 3, pickQty: 8, skuCount: 4,
+      singleCount: 1, multiCount: 1, mixCount: 1, recognizedOrderCount: 2,
+      channelCounts: { CBT: 1, USPS: 1 }
+    },
+    {
+      name: '欧洲客户', code: 'EU-02', orderCount: 2, pickQty: 7, skuCount: 2,
+      singleCount: 2, multiCount: 0, mixCount: 0, recognizedOrderCount: 2,
+      channelCounts: { USPS: 1, SwiftX: 1 }
+    }
+  ]), '客户统计应按实际导出订单聚合、分类并按订单总量降序');
+  assert(C.customerChannelIds(customerStats).join(',') === C.FIXED_CHANNEL_ORDER.join(','), '客户渠道列应完整采用固定渠道顺序且不含未识别');
   let threw2 = false;
   try { C.mapHeaders(['只有一列']); } catch (e) { threw2 = true; }
   assert(threw2, '缺列应报错');
-  console.log('✔ 表头识别：空格/换行/SKU n SKU 自动发现/缺列报错');
+  console.log('✔ 表头识别：空格/换行/SKU n SKU 自动发现/客户列兼容/缺列报错');
 
   /* 数量解析 */
   assert(C.parseQty('1,234') === 1234, '逗号应移除');

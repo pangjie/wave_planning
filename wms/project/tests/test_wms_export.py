@@ -50,7 +50,7 @@ async def test_template_selection_uses_stable_keyboard_contract(monkeypatch) -> 
 async def test_waits_until_required_template_fields_are_loaded_and_stable() -> None:
     automation = make_automation()
     partial = ["Outbound Order No/出库单号", "SKU 1", "SKU 2", "SKU 3", "SKU 4"]
-    complete = partial + [
+    old_complete = partial + [
         "SKU 5",
         "SKU 6",
         "Type of order variety/订单品种类型",
@@ -58,16 +58,19 @@ async def test_waits_until_required_template_fields_are_loaded_and_stable() -> N
         "Order No/订单号",
         "Tracking No/物流跟踪号",
     ]
+    complete = old_complete + ["Customer/客户"]
 
     labels = MagicMock()
-    labels.evaluate_all = AsyncMock(side_effect=[partial, complete, complete])
+    labels.evaluate_all = AsyncMock(
+        side_effect=[partial, old_complete, complete, complete]
+    )
     dialog = MagicMock()
     dialog.locator.return_value = labels
 
     selected = await automation._wait_for_required_template_fields(dialog)
 
     assert selected == complete
-    assert labels.evaluate_all.await_count == 3
+    assert labels.evaluate_all.await_count == 4
 
 
 def test_selects_only_new_parcel_export_task() -> None:

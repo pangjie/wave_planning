@@ -3,9 +3,10 @@
   "template_name": "渠道拆分",
   "required_template_fields": [
     "订单品种类型",
-    "物流承运商"
+    "物流承运商",
+    "客户"
   ],
-  "minimum_template_fields": 11,
+  "minimum_template_fields": 12,
   "selectors": {
     "page_export_button": "button:visible:has-text(\"导出\")",
     "loading_mask": ".el-loading-mask:visible",

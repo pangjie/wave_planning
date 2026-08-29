@@ -131,7 +131,7 @@ const chrome = T.launchChrome({ port: PORT, userDataDir: USER_DIR });
   /* 6. 回读下载文件并与内部预期逐格比对 */
   const XLSX = require(path.join(__dirname, 'vendor', 'xlsx.full.min.js'));
   const wb = XLSX.read(fs.readFileSync(downloaded), { type: 'buffer' });
-  assert(wb.SheetNames.length === 8, '回读工作表数 ' + wb.SheetNames.length);
+  assert(wb.SheetNames.length === 9, '回读工作表数 ' + wb.SheetNames.length);
   let cellMismatches = 0;
   expected.forEach((exp, si) => {
     const name = exp.name;
@@ -156,7 +156,7 @@ const chrome = T.launchChrome({ port: PORT, userDataDir: USER_DIR });
     }
   });
   assert(cellMismatches === 0, `回读文件与内部预期不一致 ${cellMismatches} 处`);
-  console.log('✔ 下载文件逐格回读比对：8 个工作表全部一致');
+  console.log('✔ 下载文件逐格回读比对：9 个工作表全部一致');
 
   /* 7. 波次表自动筛选回读 */
   const ws3 = wb.Sheets['波次表'];

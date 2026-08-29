@@ -199,7 +199,64 @@ function verifyExport(a, selection, label) {
     });
   });
 
-  /* ---- 5. 单件SKU序列 ---- */
+  /* ---- 5. 客户统计 ---- */
+  const customerAoa = byName['客户统计'];
+  check(Boolean(customerAoa), `${label} 缺少客户统计工作表`);
+  if (customerAoa) {
+    const expectedMap = new Map();
+    records.forEach(r => {
+      if (!orderOwner.has(r.orderNo)) return;
+      const customer = C.splitCustomer(r.customer);
+      const key = customer.name + '\u0001' + customer.code;
+      let item = expectedMap.get(key);
+      if (!item) {
+        item = {
+          name: customer.name, code: customer.code, orders: 0, picks: 0,
+          single: 0, multi: 0, mix: 0, skus: new Set(), recognized: 0, channels: {}
+        };
+        expectedMap.set(key, item);
+      }
+      item.orders++;
+      item.picks += Number(r.qty) || 0;
+      (r.skus || []).forEach(sku => { if (String(sku).trim()) item.skus.add(String(sku).trim()); });
+      if (r.type === '单品单件') item.single++;
+      else if (r.type === '单品多件') item.multi++;
+      else item.mix++;
+      if (r.channelId && r.channelId !== '未识别') {
+        item.recognized++;
+        item.channels[r.channelId] = (item.channels[r.channelId] || 0) + 1;
+      }
+    });
+    const expectedCustomers = Array.from(expectedMap.values()).sort((x, y) =>
+      y.orders - x.orders || x.name.localeCompare(y.name, 'zh') || x.code.localeCompare(y.code, 'zh'));
+    const channelIds = C.customerChannelIds(expectedCustomers.map(item => ({ channelCounts: item.channels })));
+    const expectedHeader = ['客户名称', '客户代码', '订单总量', '拣货总件数', 'SKU激活数量', '单件', '多件', '混件'];
+    channelIds.forEach(id => expectedHeader.push(id + '订单', id + '占比'));
+    check(JSON.stringify(customerAoa[0]) === JSON.stringify(expectedHeader), `${label} 客户统计表头或渠道顺序不符`);
+    check(customerAoa.length - 1 === expectedCustomers.length, `${label} 客户统计客户行数不符`);
+    expectedCustomers.forEach((item, index) => {
+      const row = customerAoa[index + 1] || [];
+      const expectedBase = [item.name, item.code, item.orders, item.picks, item.skus.size, item.single, item.multi, item.mix];
+      check(JSON.stringify(row.slice(0, 8)) === JSON.stringify(expectedBase), `${label} 客户统计第 ${index + 1} 行基础统计不符`);
+      let shareSum = 0;
+      channelIds.forEach((id, channelIndex) => {
+        const count = item.channels[id] || 0;
+        const share = item.recognized ? count / item.recognized : 0;
+        const gotCount = Number(row[8 + channelIndex * 2]);
+        const gotShare = Number(row[9 + channelIndex * 2]);
+        check(gotCount === count, `${label} 客户 ${item.name} 的 ${id} 订单数不符`);
+        check(Math.abs(gotShare - share) < 1e-12, `${label} 客户 ${item.name} 的 ${id} 占比不符`);
+        shareSum += gotShare;
+      });
+      check(Math.abs(shareSum - (item.recognized ? 1 : 0)) < 1e-12,
+        `${label} 客户 ${item.name} 的渠道占比合计不符或未识别进入分母`);
+    });
+    check(!customerAoa[0].some(cell => String(cell).indexOf('未识别') >= 0), `${label} 客户统计不得生成未识别渠道列`);
+    check(expectedCustomers.reduce((sum, item) => sum + item.orders, 0) === orderOwner.size,
+      `${label} 客户统计订单总量应等于实际导出订单量`);
+  }
+
+  /* ---- 6. 单件SKU序列 ---- */
   const aoa5 = byName['单件SKU序列'];
   selChans.forEach((ch, bi) => {
     const base = bi * 5;
@@ -221,7 +278,7 @@ function verifyExport(a, selection, label) {
     check(JSON.stringify(got) === JSON.stringify(expected), `${label} 单件SKU序列 ${ch.id} 不符（${got.length}/${expected.length}）`);
   });
 
-  /* ---- 6. 多件SKU序列 ---- */
+  /* ---- 7. 多件SKU序列 ---- */
   const aoa6 = byName['多件SKU序列'];
   selChans.forEach((ch, bi) => {
     const base = bi * 3;
@@ -241,7 +298,7 @@ function verifyExport(a, selection, label) {
     check(JSON.stringify(got) === JSON.stringify(expected), `${label} 多件SKU序列 ${ch.id} 不符（${got.length}/${expected.length}）`);
   });
 
-  /* ---- 7. 混件SKU序列 ---- */
+  /* ---- 8. 混件SKU序列 ---- */
   const aoa7 = byName['混件SKU序列'];
   selChans.forEach((ch, bi) => {
     const base = bi * 3;
@@ -268,7 +325,7 @@ function verifyExport(a, selection, label) {
     check(JSON.stringify(got) === JSON.stringify(expected), `${label} 混件SKU序列 ${ch.id} 不符（${got.length}/${expected.length}）`);
   });
 
-  /* ---- 8. 分类SKU序列（固定口径，不受选择影响） ---- */
+  /* ---- 9. 分类SKU序列（固定口径，不受选择影响） ---- */
   const aoa8 = byName['分类SKU序列'];
   const classes = ['普通订单', 'CBT订单', 'CBS订单'];
   const expectClass = [];

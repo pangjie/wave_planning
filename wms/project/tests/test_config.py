@@ -7,8 +7,8 @@ def test_automation_config_loads() -> None:
 
     assert config.target_url == "https://wms.xlwms.com/outbound/parcel"
     assert config.template_name == "渠道拆分"
-    assert config.required_template_fields == ["订单品种类型", "物流承运商"]
-    assert config.minimum_template_fields == 11
+    assert config.required_template_fields == ["订单品种类型", "物流承运商", "客户"]
+    assert config.minimum_template_fields == 12
     assert config.wave_picking.target_url == "https://wms.xlwms.com/outbound/wave"
     assert config.wave_picking.max_concurrent_waves == 5
     assert config.wave_printing.template_name == "一件代发汇总拣货单"

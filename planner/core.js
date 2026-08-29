@@ -20,6 +20,7 @@ var REQUIRED_COLS_LABEL = {
   'sku1sku': 'SKU 1 SKU',
   'totalqtyofsku/总数量': 'Total Qty of SKU/总数量'
 };
+var CUSTOMER_COL_NAMES = ['client/客户', 'customer/客户', 'customername/客户名称', '客户名称', '客户'];
 var SKU_COL_RE = /^sku(\d+)sku$/;
 var ABSORB_NAMES = { 1: '关闭', 2: '吸收多件', 3: '全量吸收多件', 4: '全量吸收非爆品' };
 /* 第 2 档吸收阈值：已有 SKU 段 ≤70，新增 SKU 段 ≤60（与功能说明文档一致） */
@@ -61,6 +62,24 @@ function parseQty(v) {
   var n = Number(s);
   if (!isFinite(n) || n < 0) return 0;
   return n;
+}
+function customerColumnIndex(headerMap) {
+  var map = (headerMap && headerMap.map) || {};
+  for (var i = 0; i < CUSTOMER_COL_NAMES.length; i++) {
+    if (CUSTOMER_COL_NAMES[i] in map) return map[CUSTOMER_COL_NAMES[i]];
+  }
+  var keys = Object.keys(map);
+  for (var k = 0; k < keys.length; k++) {
+    if (keys[k].split('/').indexOf('客户') >= 0) return map[keys[k]];
+  }
+  return -1;
+}
+function splitCustomer(v) {
+  var raw = text(v);
+  if (raw === '') return { name: '未填写', code: '' };
+  var match = /^(.*?)\s*[（(]\s*([^（）()]*)\s*[）)]\s*$/.exec(raw);
+  if (!match) return { name: raw, code: '' };
+  return { name: text(match[1]) || '未填写', code: text(match[2]) };
 }
 /* ---------- 3. 工作表定位与表头识别 ---------- */
 function locateSheet(wb) {
@@ -117,12 +136,14 @@ function buildRecords(dataRows, headerMap) {
   var qtyMap = {}; // 出库单号 -> 总数量（首次遇到）
   var col = headerMap.map;
   var skuCols = headerMap.skuIdx.map(function (s) { return s.ci; });
+  var customerCol = customerColumnIndex(headerMap);
   for (var i = 0; i < dataRows.length; i++) {
     var row = dataRows[i] || [];
     var outNo = text(row[col['outboundorderno/出库单号']]);
     var carrier = text(row[col['shippingcarrier/物流承运商']]);
     var type = text(row[col['typeofordervariety/订单品种类型']]);
     var tracking = text(row[col['package1trackingno./物流跟踪号']]);
+    var customer = customerCol >= 0 ? text(row[customerCol]) : '';
     var skus = skuCols.map(function (ci) { return text(row[ci]); });
     var qty = parseQty(row[col['totalqtyofsku/总数量']]);
     var allEmpty = [outNo, carrier, type, tracking].concat(skus).every(function (v) { return v === ''; });
@@ -138,6 +159,7 @@ function buildRecords(dataRows, headerMap) {
         orderNo: orderNo,
         type: type,
         carrier: carrierUp,
+        customer: customer,
         sku1: '',
         skus: [],
         channelId: carrierUp === 'CBT' ? 'CBT' : (carrierUp === 'CBS' ? 'CBS' : trackingChannel(tracking)),
@@ -147,6 +169,7 @@ function buildRecords(dataRows, headerMap) {
       byOrder.set(orderNo, rec);
       records.push(rec);
     }
+    if (!rec.customer && customer) rec.customer = customer;
     skus.forEach(function (s) {
       if (s !== '' && rec.skus.indexOf(s) === -1) {
         rec.skus.push(s);
@@ -649,7 +672,10 @@ function analyze(records, qtyMap, mode, paramsFor) {
       c.byType[t].forEach(function (s) { waveStats[t].waves++; waveStats[t].orders += s.orderCount; });
     });
   });
-  return { mode: mode, channels: chans, totals: totals, waveStats: waveStats, classSeq: buildClassSeq(records) };
+  return {
+    mode: mode, channels: chans, totals: totals, waveStats: waveStats,
+    classSeq: buildClassSeq(records), records: records, qtyMap: qtyMap
+  };
 }
 
 /* ---------- 当前选择下的有效订单统计 ---------- */
@@ -716,7 +742,7 @@ function buildOrdinaryEvolvedAnalysis(baseAnalysis, records, qtyMap, paramsFor, 
 }
 
 /* =============================================================
- * 13. 导出：8 个工作表
+ * 13. 导出：9 个工作表
  * ============================================================= */
 function collectBlocks(channels, selected, segSelected) {
   var blocks = [];
@@ -923,7 +949,130 @@ function sheetChannelStats(channels, selected, segSelected) {
   return { name: '渠道统计', aoa: aoa, styles: styles, cols: widths };
 }
 
-/* ---- 工作表五/六/七 骨架 ---- */
+/* ---- 工作表五：客户统计（仅统计本次实际导出的订单） ---- */
+function buildCustomerStats(records, blocks) {
+  var selectedOrderNos = new Set();
+  blocks.forEach(function (block) {
+    block.segs.forEach(function (seg) {
+      seg.orderNos.forEach(function (orderNo) { selectedOrderNos.add(orderNo); });
+    });
+  });
+  var stats = new Map();
+  var seenOrders = new Set();
+  (records || []).forEach(function (record) {
+    if (!selectedOrderNos.has(record.orderNo) || seenOrders.has(record.orderNo)) return;
+    seenOrders.add(record.orderNo);
+    var customer = splitCustomer(record.customer);
+    var key = customer.name + '\u0001' + customer.code;
+    var item = stats.get(key);
+    if (!item) {
+      item = {
+        name: customer.name, code: customer.code,
+        orderCount: 0, pickQty: 0, skuCount: 0,
+        singleCount: 0, multiCount: 0, mixCount: 0,
+        recognizedOrderCount: 0, channelCounts: {}, skuSet: new Set()
+      };
+      stats.set(key, item);
+    }
+    item.orderCount++;
+    item.pickQty += parseQty(record.qty);
+    (record.skus || []).forEach(function (sku) {
+      sku = text(sku);
+      if (sku !== '') item.skuSet.add(sku);
+    });
+    if (record.type === '单品单件') item.singleCount++;
+    else if (record.type === '单品多件') item.multiCount++;
+    else item.mixCount++;
+    var channelId = text(record.channelId);
+    /* 未识别订单保留在客户总量中，但不进入渠道构成的数量与占比分母。 */
+    if (channelId !== '' && channelId !== '未识别') {
+      item.recognizedOrderCount++;
+      item.channelCounts[channelId] = (item.channelCounts[channelId] || 0) + 1;
+    }
+  });
+  var out = Array.from(stats.values());
+  out.forEach(function (item) {
+    item.skuCount = item.skuSet.size;
+    delete item.skuSet;
+  });
+  return out.sort(function (a, b) {
+    return b.orderCount - a.orderCount ||
+      a.name.localeCompare(b.name, 'zh') || a.code.localeCompare(b.code, 'zh');
+  });
+}
+function customerChannelIds(stats) {
+  /* 固定列保证不同批次导出的客户统计结构一致；新识别出的扩展渠道追加在末尾。 */
+  var ids = new Set(FIXED_CHANNEL_ORDER);
+  stats.forEach(function (item) {
+    Object.keys(item.channelCounts || {}).forEach(function (id) {
+      if (id !== '未识别') ids.add(id);
+    });
+  });
+  var rank = new Map();
+  FIXED_CHANNEL_ORDER.forEach(function (id, i) { rank.set(id, i); });
+  return Array.from(ids).sort(function (a, b) {
+    var ar = rank.has(a) ? rank.get(a) : Infinity;
+    var br = rank.has(b) ? rank.get(b) : Infinity;
+    return ar - br || a.localeCompare(b, 'zh');
+  });
+}
+function sheetCustomerStats(records, blocks) {
+  var stats = buildCustomerStats(records, blocks);
+  var channelIds = customerChannelIds(stats);
+  var header = ['客户名称', '客户代码', '订单总量', '拣货总件数', 'SKU激活数量', '单件', '多件', '混件'];
+  channelIds.forEach(function (id) { header.push(id + '订单', id + '占比'); });
+  var aoa = [header];
+  stats.forEach(function (item) {
+    var row = [
+      item.name, item.code, item.orderCount, item.pickQty,
+      item.skuCount, item.singleCount, item.multiCount, item.mixCount
+    ];
+    channelIds.forEach(function (id) {
+      var count = item.channelCounts[id] || 0;
+      row.push(count, item.recognizedOrderCount ? count / item.recognizedOrderCount : 0);
+    });
+    aoa.push(row);
+  });
+  var styles = [];
+  for (var c = 0; c < 8; c++) {
+    styles.push({
+      r: 0, c: c,
+      s: {
+        fill: { patternType: 'solid', fgColor: { rgb: 'FFDDEBFA' } },
+        font: { bold: true },
+        alignment: { horizontal: 'center', vertical: 'center' }
+      }
+    });
+  }
+  channelIds.forEach(function (id, i) {
+    var fill = fillOf(id);
+    for (var offset = 0; offset < 2; offset++) {
+      styles.push({
+        r: 0, c: 8 + i * 2 + offset,
+        s: { fill: fill, font: { bold: true }, alignment: { horizontal: 'center', vertical: 'center' } }
+      });
+    }
+  });
+  for (var r = 1; r < aoa.length; r++) {
+    var rowFill = r % 2 === 0 ? { patternType: 'solid', fgColor: { rgb: 'FFF6F9FD' } } : null;
+    for (var c2 = 0; c2 < aoa[r].length; c2++) {
+      var style = { alignment: { horizontal: c2 < 2 ? 'left' : 'center', vertical: 'center' } };
+      if (c2 >= 9 && (c2 - 9) % 2 === 0) style.numFmt = '0.0%';
+      if (rowFill) style.fill = rowFill;
+      styles.push({ r: r, c: c2, s: style });
+    }
+  }
+  var widths = [28, 18, 12, 14, 14, 10, 10, 10];
+  channelIds.forEach(function () { widths.push(12, 11); });
+  return {
+    name: '客户统计', aoa: aoa, styles: styles,
+    cols: widths.map(function (w) { return { wch: w }; }),
+    autofilter: 'A1:' + colName(header.length - 1) + Math.max(1, aoa.length),
+    freezeRows: 1, freezeCols: 2
+  };
+}
+
+/* ---- 工作表六/七/八 骨架 ---- */
 function seqSheetBase(name, selChans, colCount, headers) {
   var cols = [], blockRanges = [];
   selChans.forEach(function (ch) {
@@ -1035,7 +1184,7 @@ function sheetMixSeq(channels, selected, segSelected) {
   return sheet;
 }
 
-/* ---- 工作表八：分类SKU序列 ---- */
+/* ---- 工作表九：分类SKU序列 ---- */
 function sheetClassSeq(classSeq) {
   var sheet = seqSheetBase('分类SKU序列', classSeq, 3, ['排序', 'SKU', '出现数量']);
   var rowsByCh = classSeq.map(function (cls) {
@@ -1057,6 +1206,7 @@ function buildExport(analysis, exportState) {
     sheetGroupSkuPool(blocks),
     sheetWaveTable(blocks, exportState.waveNos || null),
     sheetChannelStats(analysis.channels, selected, segSelected),
+    sheetCustomerStats(analysis.records || [], blocks),
     sheetSingleSeq(analysis.channels, selected, segSelected),
     sheetMultiSeq(analysis.channels, selected, segSelected),
     sheetMixSeq(analysis.channels, selected, segSelected),
@@ -1134,6 +1284,8 @@ function colName(n) {
 
 /* 样式注册表：字体 / 填充 / 边框 / XF */
 function StyleRegistry() {
+  this.numFmts = [];
+  this.numFmtKeys = new Map();
   this.fonts = ['<font><sz val="12"/><name val="Calibri"/><family val="2"/></font>'];
   this.fontKeys = new Map([['12,0', 0]]);
   this.fills = ['<fill><patternFill patternType="none"/></fill>', '<fill><patternFill patternType="gray125"/></fill>'];
@@ -1146,6 +1298,15 @@ function StyleRegistry() {
   this.xfs = ['<xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1"/>'];
   this.xfKeys = new Map();
 }
+StyleRegistry.prototype.numFmtId = function (code) {
+  code = String(code == null ? '' : code);
+  if (!code) return 0;
+  if (this.numFmtKeys.has(code)) return this.numFmtKeys.get(code);
+  var id = 164 + this.numFmts.length;
+  this.numFmts.push('<numFmt numFmtId="' + id + '" formatCode="' + xmlEsc(code) + '"/>');
+  this.numFmtKeys.set(code, id);
+  return id;
+};
 StyleRegistry.prototype.fontId = function (f) {
   var sz = (f && f.sz) || 12;
   var bold = f && f.bold ? 1 : 0;
@@ -1171,6 +1332,7 @@ StyleRegistry.prototype.borderId = function (s) {
   return (b.top || b.bottom || b.left || b.right) ? 1 : 0; /* 空边框(间隔列) → 0 */
 };
 StyleRegistry.prototype.xfId = function (s) {
+  var numFmtId = this.numFmtId(s && s.numFmt);
   var fontId = s && s.font ? this.fontId(s.font) : 0;
   var fillId = s && s.fill ? this.fillId(s.fill) : 0;
   var borderId = this.borderId(s);
@@ -1178,10 +1340,11 @@ StyleRegistry.prototype.xfId = function (s) {
   var h = al && al.horizontal ? al.horizontal : '';
   var v = al && al.vertical ? al.vertical : '';
   var w = al && al.wrapText ? '1' : '';
-  var key = fontId + ',' + fillId + ',' + borderId + ',' + h + '|' + v + '|' + w;
+  var key = numFmtId + ',' + fontId + ',' + fillId + ',' + borderId + ',' + h + '|' + v + '|' + w;
   if (this.xfKeys.has(key)) return this.xfKeys.get(key);
   var id = this.xfs.length;
-  var attrs = 'numFmtId="0" fontId="' + fontId + '" fillId="' + fillId + '" borderId="' + borderId + '" xfId="0"';
+  var attrs = 'numFmtId="' + numFmtId + '" fontId="' + fontId + '" fillId="' + fillId + '" borderId="' + borderId + '" xfId="0"';
+  if (numFmtId) attrs += ' applyNumberFormat="1"';
   if (fontId) attrs += ' applyFont="1"';
   if (fillId) attrs += ' applyFill="1"';
   attrs += ' applyBorder="1"';
@@ -1211,6 +1374,7 @@ StyleRegistry.prototype.registerSheet = function (spec) {
 StyleRegistry.prototype.stylesXml = function () {
   var o = ['<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
     '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">',
+    (this.numFmts.length ? '<numFmts count="' + this.numFmts.length + '">' + this.numFmts.join('') + '</numFmts>' : ''),
     '<fonts count="' + this.fonts.length + '">' + this.fonts.join('') + '</fonts>',
     '<fills count="' + this.fills.length + '">' + this.fills.join('') + '</fills>',
     '<borders count="' + this.borders.length + '">' + this.borders.join('') + '</borders>',
@@ -1234,7 +1398,18 @@ function sheetToXml(spec, reg) {
   var out = ['<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
     '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'];
   out.push('<dimension ref="A1:' + colName(reg.nCols - 1) + reg.nRows + '"/>');
-  out.push('<sheetViews><sheetView workbookViewId="0"/></sheetViews>');
+  var freezeRows = Math.max(0, Number(spec.freezeRows) || 0);
+  var freezeCols = Math.max(0, Number(spec.freezeCols) || 0);
+  if (freezeRows || freezeCols) {
+    var pane = freezeRows && freezeCols ? 'bottomRight' : (freezeRows ? 'bottomLeft' : 'topRight');
+    var paneAttrs = '';
+    if (freezeCols) paneAttrs += ' xSplit="' + freezeCols + '"';
+    if (freezeRows) paneAttrs += ' ySplit="' + freezeRows + '"';
+    paneAttrs += ' topLeftCell="' + colName(freezeCols) + (freezeRows + 1) + '" activePane="' + pane + '" state="frozen"';
+    out.push('<sheetViews><sheetView workbookViewId="0"><pane' + paneAttrs + '/></sheetView></sheetViews>');
+  } else {
+    out.push('<sheetViews><sheetView workbookViewId="0"/></sheetViews>');
+  }
   out.push('<sheetFormatPr defaultRowHeight="15"/>');
   if (spec.cols && spec.cols.length) {
     out.push('<cols>');
@@ -1420,6 +1595,8 @@ if (typeof module !== 'undefined' && module.exports) {
     buildRecords: buildRecords, trackingChannel: trackingChannel,
     linearPartition: linearPartition, analyzeChannel: analyzeChannel,
     analyze: analyze, buildExport: buildExport, buildXlsxBuffer: buildXlsxBuffer,
+    splitCustomer: splitCustomer, buildCustomerStats: buildCustomerStats,
+    customerChannelIds: customerChannelIds,
     selectedOrderCountForChannel: selectedOrderCountForChannel,
     selectedOrderCount: selectedOrderCount,
     selectedSkuCount: selectedSkuCount,
