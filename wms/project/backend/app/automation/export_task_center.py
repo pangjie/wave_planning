@@ -9,7 +9,7 @@ from pathlib import Path
 
 from playwright.async_api import Page
 
-from app.automation.common import AutomationError, ProgressCallback
+from app.automation.common import AutomationError, ProgressCallback, run_cleanup
 from app.core.config import AutomationConfig, Settings
 
 
@@ -39,9 +39,15 @@ class ExportTaskCenter:
         """Capture the pre-export history used to distinguish the new task."""
         await self._open(page)
         try:
-            return await self._read_items(page)
-        finally:
+            items = await self._read_items(page)
+        except BaseException:
+            # 保留读取失败/取消的主因，关闭弹层仅属收尾。
+            await run_cleanup(lambda: self._close(page), "读取任务中心失败后的关闭")
+            raise
+        else:
+            # 尚未提交导出；弹层未关闭时不得开始后续操作。
             await self._close(page)
+            return items
 
     async def wait_until_downloadable(
         self,
@@ -71,7 +77,7 @@ class ExportTaskCenter:
                 detected_key = candidate.key
                 failure_signal = f"{candidate.status} {candidate.icon_class}".lower()
                 if any(token in failure_signal for token in ("失败", "error", "fail")):
-                    await self._close(page)
+                    await run_cleanup(lambda: self._close(page), "导出任务失败后的任务中心关闭")
                     raise AutomationError(
                         f"导出任务失败：{candidate.filename}（{candidate.status}）"
                     )
@@ -91,22 +97,27 @@ class ExportTaskCenter:
             await self._close(page)
             await asyncio.sleep(timeouts.task_poll_interval / 1000)
 
-        if await page.locator(self.config.selectors.task_center_popover).is_visible():
-            await self._close(page)
+        await run_cleanup(lambda: self._close(page), "导出等待超时后的任务中心关闭")
         raise AutomationError("等待导出文件完成超时，未下载任何历史文件。")
 
-    async def download(self, page: Page, task: TaskCenterItem) -> Path:
+    async def download(
+        self,
+        page: Page,
+        task: TaskCenterItem,
+        *,
+        warnings: list[str] | None = None,
+    ) -> Path:
         """Download exactly the task selected by the before/after comparison."""
         selectors = self.config.selectors
         await self._open(page)
         rows = page.locator(selectors.task_center_item).filter(has_text=task.filename)
         if await rows.count() != 1:
-            await self._close(page)
+            await run_cleanup(lambda: self._close(page), "任务中心关闭", warnings)
             raise AutomationError(f"无法唯一定位刚完成的导出任务：{task.filename}")
 
         button = rows.locator(selectors.task_center_download_button).filter(has_text="下载")
         if await button.count() != 1 or not await button.is_enabled():
-            await self._close(page)
+            await run_cleanup(lambda: self._close(page), "任务中心关闭", warnings)
             raise AutomationError(f"导出任务已出现，但下载按钮不可用：{task.filename}")
 
         try:
@@ -127,7 +138,8 @@ class ExportTaskCenter:
             raise AutomationError(
                 f"下载文件失败：{task.filename}（{exc}）"
             ) from exc
-        await self._close(page)
+        # save_as 已完成，任务中心收尾异常不能抹掉已下载文件。
+        await run_cleanup(lambda: self._close(page), "下载后的任务中心关闭", warnings)
         return target
 
     async def _open(self, page: Page) -> None:

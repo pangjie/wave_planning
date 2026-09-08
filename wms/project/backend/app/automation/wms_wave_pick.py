@@ -83,15 +83,19 @@ class WmsWavePickAutomation:
             "最大并发为 5；可识别的网络错误会被忽略且不重试，任务结束后只做一次全量列表检查。",
         )
 
+        cleanup_warnings: list[str] = []
         async with open_browser_context(
             self.settings,
             headless=effective_headless,
+            cleanup_warnings=cleanup_warnings,
         ) as context:
-            return await self._run_all_pending(
+            result = await self._run_all_pending(
                 context,
                 progress,
                 requested_wave_nos=requested_wave_nos,
             )
+        result.warnings.extend(cleanup_warnings)
+        return result
 
     async def _run_all_pending(
         self,
@@ -346,17 +350,24 @@ class WmsWavePickAutomation:
     @staticmethod
     def _is_network_error(error: BaseException) -> bool:
         messages: list[str] = []
+        transport_error = False
         current: BaseException | None = error
         visited: set[int] = set()
         while current is not None and id(current) not in visited:
             visited.add(id(current))
+            # 遮挡/不可见/确认等待超时不能证明传输故障，不能因此继续扩大操作范围。
             if isinstance(current, (PlaywrightTimeoutError, TimeoutError)):
-                return True
-            messages.append(str(current).lower())
-            current = current.__cause__ or current.__context__
+                return False
+            # Playwright 的动作日志可能含选择器文案（例如 Network Error）；不拿日志内容分类。
+            message = str(current).lower().split("call log:", 1)[0]
+            if re.match(r"\s*locator\.", message) or "browser has been closed" in message:
+                return False
+            messages.append(message)
+            transport_error = transport_error or isinstance(current, ConnectionError)
+            current = current.__cause__ or (None if current.__suppress_context__ else current.__context__)
 
         text = " ".join(messages)
-        return any(
+        return transport_error or any(
             token in text
             for token in (
                 "net::err_",
@@ -367,13 +378,7 @@ class WmsWavePickAutomation:
                 "connection reset",
                 "connection refused",
                 "connection closed",
-                "连接超时",
-                "连接失败",
                 "socket hang up",
-                "dns",
-                "timed out",
-                "timeout",
-                "temporarily unavailable",
             )
         )
 

@@ -1,22 +1,18 @@
-/* Chrome headless 端到端测试（终端风格·点击版·固定列宽与归并开关） */
+/* 当前页面契约：顶栏操作、弹性表格、配色主题、勾选与导出，纯离线。 */
 'use strict';
 const fs = require('fs');
 const path = require('path');
 const T = require('./test-helpers.js');
 
 const P = T.paths(__dirname);
-const PORT = 9333;
-const USER_DIR = P.tmp('chrome-profile');
 const DL_DIR = P.tmp('downloads');
 const HTML = P.html;
 const SAMPLE = P.sample;
 const { sleep, assert } = T;
 const GRAY = 'rgb(139, 148, 158)'; /* 渠道否掉标签灰（app.js OFF_TAG_COLOR） */
 
-const chrome = T.launchChrome({ port: PORT, userDataDir: USER_DIR });
-
-(async () => {
-  const ws = await T.connectCdp({ port: PORT });
+T.withChrome({}, async chrome => {
+  const ws = await T.connectCdp({ chrome });
   const drv = T.createDriver(ws);
   const { send, evalJs, poll } = drv;
   await drv.enablePage();
@@ -27,6 +23,7 @@ const chrome = T.launchChrome({ port: PORT, userDataDir: USER_DIR });
 
   await poll(`document.readyState`, 'complete');
   await poll(`document.querySelectorAll('#dash .prow').length`, 12);
+  await sleep(750); // 等待入场动画结束后测量最终布局。
   console.log('✔ 页面加载');
 
   /* 1. 空状态：直接显示空表格骨架，无说明段落、无品牌文字 */
@@ -41,10 +38,11 @@ const chrome = T.launchChrome({ port: PORT, userDataDir: USER_DIR });
       themeDefault: document.querySelector('#themeList li.on').textContent,
       themeAttr: document.body.getAttribute('data-theme') || '',
       fontGone: !document.getElementById('fontBtn'),
-      themeBtnInBtns: !!(document.getElementById('themeBtn') && document.getElementById('themeBtn').closest('.side-btns')),
+      themeBtnInBtns: !!(document.getElementById('themeBtn') && document.getElementById('themeBtn').closest('.header-actions')),
       themeBtnText: (document.getElementById('themeBtn') || {textContent: ''}).textContent,
+      themeIconOnly: getComputedStyle(document.getElementById('themeBtn')).fontSize === '0px' && getComputedStyle(document.getElementById('themeBtn'), '::before').content === '"◐"',
       sideExists: !!document.querySelector('.side'),
-      btnInSide: !!(document.getElementById('btnImport') && document.getElementById('btnImport').closest('.side')),
+      btnInHeader: !!(document.getElementById('btnImport') && document.getElementById('btnImport').closest('.header-actions')),
       fileRowGone: !document.getElementById('fileLabel'),
       modeInSide: !!(document.getElementById('modeLabel') && document.getElementById('modeLabel').closest('.side')),
       wmsGenBtn: !!document.getElementById('wmsGenerate'),
@@ -66,31 +64,38 @@ const chrome = T.launchChrome({ port: PORT, userDataDir: USER_DIR });
   })()`);
   const em = JSON.parse(empty);
   assert(em.hasThead === true && em.unifiedRow === true && em.prowCount === 12, '空状态应显示 12 个渠道行的表格骨架（含空渠道）');
-  assert(em.noUsage === true && em.noBar === true, '说明段落或品牌文字未移除，顶栏应彻底移除');
+  assert(em.noUsage === true && em.noBar === true, '旧说明段落和旧 bar 不应恢复');
   assert(em.hasButtons === true, '导入/导出按钮缺失');
   assert(em.themeOptions === 5 && em.themeDefault === '光耀紫府', '主题应为 5 个选项且默认光耀紫府: ' + JSON.stringify({n: em.themeOptions, d: em.themeDefault}));
   assert(em.themeAttr === 'dracula', '默认主题属性应为 dracula: ' + em.themeAttr);
   assert(em.fontGone === true, '字体选择功能应已移除（字体固定 Sarasa Mono SC）');
-  assert(em.sideExists === true && em.btnInSide === true && em.fileRowGone === true && em.modeInSide === true,
-    '导入/导出与渠道模式应位于左侧操作栏，且导入文档行已移除: ' + JSON.stringify({s: em.sideExists, b: em.btnInSide, f: em.fileRowGone, m: em.modeInSide}));
-  assert(em.themeBtnInBtns === true && em.themeBtnText === '主题', '主题按钮应位于按钮行且仅显示「主题」二字: ' + JSON.stringify({in: em.themeBtnInBtns, t: em.themeBtnText}));
+  assert(em.sideExists === true && em.btnInHeader === true && em.fileRowGone === true && em.modeInSide === true,
+    '导入应在右上角，渠道模式在侧栏，旧导入模块已移除: ' + JSON.stringify(em));
+  assert(em.themeBtnInBtns && em.themeBtnText === '主题' && em.themeIconOnly, '主题按钮应在右上角，以图标显示并保留可访问文本');
   assert(em.wmsGenBtn === true, '操作栏应存在生成波次按钮');
-  assert(em.sideW === 200, '操作栏宽度应为 200px: ' + em.sideW);
+  assert(em.sideW === 250, '1920px 视口操作栏宽度应为 250px: ' + em.sideW);
   assert(em.wmsHidden === true, 'file:// 打开时 WMS 联动区应隐藏（离线纯规划模式）');
-  assert(em.bodyBg === 'rgb(40, 42, 54)', '默认主题应为光耀紫府（深紫底）: ' + em.bodyBg);
+  assert(em.bodyBg === 'rgb(28, 23, 48)', '默认主题应为光耀紫府的提亮底色: ' + em.bodyBg);
   assert(em.statsLines === 0, '表格上方统计条应已移除');
   assert(em.noHint === true, '底部勾选语义说明未移除');
   assert(em.unifiedLabel === '统一调整' && em.unifiedAlign === 'center', '统一行标签应为「统一调整」且水平居中: ' + JSON.stringify({l: em.unifiedLabel, a: em.unifiedAlign}));
-  assert(em.shellMaxW === '1160px', '页面最大宽度应为 1160px: ' + em.shellMaxW);
+  assert(em.shellMaxW === '1640px', '页面最大宽度应为 1640px: ' + em.shellMaxW);
   assert(await evalJs(`!document.getElementById('countLabel')`) === true, '顶栏不应再有订单统计');
   assert(em.modeLabel === '拆分' && em.modeToggle === true, '渠道模式应显示「拆分」且可点击: ' + em.modeLabel);
   assert(em.statsLines === 0 && em.noDupStats === true, '表格上方不应再有重复统计');
   assert(em.engineHidden === true && em.engineText === '', '引擎正常时不应显示引擎状态: ' + JSON.stringify({h: em.engineHidden, t: em.engineText}));
-  console.log('✔ 空状态：表格骨架，渠道模式切换，统一调整居中，最大宽 1160px；顶栏已移除');
+  console.log('✔ 空状态：表格骨架、统一调整居中、1640px 布局，右上角导入/导出/主题图标');
 
   /* 2. 导入 */
   await evalJs(T.importFileExpr(SAMPLE));
   await poll(`window.__dshTest.state.records.length`, 5700);
+  assert(await evalJs(`document.querySelector('#dash .urowe td.num').textContent`) === '5690', '初次导入应排除默认关闭的 10 单未识别订单');
+  assert(await evalJs(`window.__dshTest.state.modes.normal.sel.channels.has('未识别')`) === false, '未识别渠道默认关闭');
+  // 以下旧样例精确计数针对全部 5700 单；显式全选，而不是假设默认激活未识别。
+  await evalJs(`document.querySelector('#dash [data-master="ch"].tog').click()`);
+  // 本节的样例分段数基于 SwiftX 首行，显式使用降序；固定顺序另有独立测试。
+  await evalJs(`document.getElementById('sortModeLabel').click()`);
+  assert(await evalJs(`document.getElementById('sortModeLabel').textContent`) === '降序', '应显式切换到降序');
   assert(await evalJs(`document.getElementById('status').textContent`) === '', '导入订单后不应显示动作说明');
   assert(await evalJs(`document.querySelectorAll('#dash .prow').length`) === 12, '渠道行应为 12（含空渠道）');
 
@@ -123,6 +128,7 @@ const chrome = T.launchChrome({ port: PORT, userDataDir: USER_DIR });
       urowOrder: urowOrder,
       th0w: Math.round(th0w),
       midW: midW,
+      tableW: document.querySelector('.pt').getBoundingClientRect().width,
       layout: getComputedStyle(document.querySelector('.pt')).tableLayout
     });
   })()`);
@@ -136,24 +142,25 @@ const chrome = T.launchChrome({ port: PORT, userDataDir: USER_DIR });
   assert(sc.paperKey === 'SwiftX|单件paper-1', '内部键名被改动（影响导出）: ' + sc.paperKey);
   assert(sc.absorbTxt === '关闭', '吸收列应只显示档位名（无数字）: ' + sc.absorbTxt);
   assert(sc.wcColor !== sc.ocColor, '波数/单量未着色区分');
-  assert(sc.th0w === 104, '渠道列宽未固定为 104px: ' + sc.th0w);
-  assert(sc.midW.every(function(w){return w === 60;}), '订单/容量/爆品/多件/混件/吸收六列应等宽 60px: ' + JSON.stringify(sc.midW));
+  assert(Math.abs(sc.th0w - sc.tableW * .10) < 1, '渠道列应占表格 10%: ' + JSON.stringify(sc));
+  assert(sc.midW.every(w => Math.abs(w - sc.tableW * .06) < 1), '六个参数/计数列应各占 6% 且等宽: ' + JSON.stringify(sc.midW));
   assert(sc.head.indexOf('爆品线') === -1 && sc.head.indexOf('容量') < sc.head.indexOf('爆品'), '列顺序应为 渠道/订单/容量/爆品/…: ' + sc.head);
   assert(sc.layout === 'fixed', '表格未使用固定布局');
   assert(sc.headHasCount === false, '表头类型列不应再显示波/单统计');
   assert(sc.urowCountTxt.indexOf('波') !== -1 && sc.urowCountTxt.split('|').length === 4, '波/单统计应在统一行类型列: ' + sc.urowCountTxt);
   assert(sc.urowOrder === '5700', '统一行订单总量应为 5700（全选时）: ' + sc.urowOrder);
-  /* 操作栏紧贴表格：side.right == twrap.x */
+  /* 侧栏/主栏顶端对齐；表格填满独立的矩阵容器。 */
   const align = await evalJs(`(function(){
     var t = document.querySelector('.twrap').getBoundingClientRect();
     var s = document.querySelector('.side').getBoundingClientRect();
-    var b = document.querySelector('.side-btns').getBoundingClientRect();
-    return JSON.stringify({sideRight: Math.round(s.right - t.x), sideW: Math.round(s.width), topGap: Math.round(b.top - t.top)});
+    var term = document.querySelector('.term').getBoundingClientRect();
+    var matrix = document.querySelector('.matrix-panel');
+    return JSON.stringify({gap: term.x - s.right, sideW: s.width, topGap: term.top - s.top, tableW: t.width, matrixW: matrix.clientWidth});
   })()`);
   const al = JSON.parse(align);
-  assert(Math.abs(al.sideRight) < 2 && al.sideW === 200, '操作栏与表格位置不一致: ' + JSON.stringify(al));
-  assert(Math.abs(al.topGap) < 2, '操作栏与表格顶端应对齐: ' + JSON.stringify(al));
-  console.log('✔ 导入：11 列结构；操作栏（200px）紧贴表格且顶端对齐（Δtop=' + al.topGap + 'px）');
+  assert(Math.abs(al.gap - 14) < 1 && al.sideW === 250, '侧栏/主栏应间隔 14px: ' + JSON.stringify(al));
+  assert(Math.abs(al.topGap) < 1 && Math.abs(al.tableW - al.matrixW) < 1, '主栏应顶端对齐且表格填满矩阵容器: ' + JSON.stringify(al));
+  console.log('✔ 导入：11 列结构；250px 侧栏与主栏对齐，表格填满矩阵容器');
 
   /* 2.5 渠道标签（p10k 等宽风格）、行内留空、否掉变色 */
   const tag = await evalJs(`(function(){
@@ -161,39 +168,49 @@ const chrome = T.launchChrome({ port: PORT, userDataDir: USER_DIR });
     var widths = els.map(function(el){ return Math.round(el.getBoundingClientRect().width * 100) / 100; });
     var el = els[0];
     var cs = getComputedStyle(el);
-    var arrow = getComputedStyle(el, '::after');
+    var marker = getComputedStyle(el, '::before');
     var td = document.querySelector('#dash .prow td:nth-child(2)');
     var tcs = getComputedStyle(td);
     var chTd = document.querySelector('#dash .prow td:first-child');
-    var chevronEnd = el.getBoundingClientRect().right + 9;
+    var tagEnd = el.getBoundingClientRect().right;
     var tdRight = chTd.getBoundingClientRect().right;
     return JSON.stringify({
       widths: widths,
       equalWidth: widths.every(function(w){ return w === widths[0]; }),
       bg: cs.backgroundColor,
+      backgroundImage: cs.backgroundImage,
       color: cs.color,
-      arrowColor: arrow.borderLeftColor,
-      arrowVisible: parseFloat(arrow.borderTopWidth) > 0 && parseFloat(arrow.borderLeftWidth) > 0,
+      markerColor: marker.backgroundColor,
+      markerWidth: parseFloat(marker.width),
+      radius: parseFloat(cs.borderRadius),
       padTop: Math.round(parseFloat(tcs.paddingTop)),
       vAlign: tcs.verticalAlign,
-      chevronClearance: Math.round(tdRight - chevronEnd)
+      tagClearance: Math.round(tdRight - tagEnd)
     });
   })()`);
   const tg = JSON.parse(tag);
   assert(tg.equalWidth === true, '渠道标签应等宽: ' + JSON.stringify(tg.widths));
-  assert(tg.bg !== 'rgba(0, 0, 0, 0)' && tg.color === 'rgb(0, 0, 0)', '渠道标签应为彩色背景+黑字: ' + JSON.stringify(tg));
-  assert(tg.arrowVisible === true && tg.arrowColor === tg.bg, '渠道标签右侧应有同色尖角: ' + JSON.stringify(tg));
-  assert(tg.padTop >= 10 && tg.padTop <= 12 && tg.vAlign === 'top', '渠道行应上下各留半个行高且顶部对齐: ' + JSON.stringify(tg));
-  assert(tg.chevronClearance >= 8, '尖角与表格线框太贴近: ' + tg.chevronClearance + 'px');
-  console.log('✔ 渠道标签：等宽 p10k 风格（彩底黑字+尖角，与线框留出 ' + tg.chevronClearance + 'px）；行首尾留空、顶部对齐');
+  assert(tg.backgroundImage.includes('linear-gradient') && tg.color !== 'rgb(0, 0, 0)', '渠道标签应为渐变底与明亮渠道色文字: ' + JSON.stringify(tg));
+  assert(tg.markerWidth === 6 && tg.radius === 9 && tg.markerColor !== 'rgba(0, 0, 0, 0)', '渠道标签应有圆角和彩色标记点: ' + JSON.stringify(tg));
+  assert(tg.padTop === 20 && tg.vAlign === 'top', '渠道参数格应顶部对齐并留 20px 上边距: ' + JSON.stringify(tg));
+  assert(tg.tagClearance >= 8, '渠道标签不应溢出单元格: ' + JSON.stringify(tg));
+  console.log('✔ 渠道标签：等宽圆角渐变、标记点和明亮文字，标签不溢出单元格');
 
   /* 2.6 否掉渠道 → 标签变灰；否掉分段 → 文字变灰（一致变色） */
-  const offColor = await evalJs(`(function(){
+  const offColor = await evalJs(`(async function(){
+    async function settleChannel() {
+      var row = document.querySelector('#dash .prow[data-ch="CBT"]');
+      void row.offsetWidth; // Flush the changed styles before collecting transitions.
+      await Promise.all(row.getAnimations({subtree: true}).filter(function(animation) {
+        return animation.effect.getComputedTiming().iterations !== Infinity;
+      }).map(function(animation) { return animation.finished; }));
+    }
     document.querySelector('#dash .chn[data-ch="CBT"]').click();
+    await settleChannel();
     var cbtTag = document.querySelector('#dash .chn[data-ch="CBT"]');
     var otherTag = document.querySelector('#dash .chn[data-ch="SwiftX"]');
-    var cbtVar = getComputedStyle(cbtTag).backgroundColor;
-    var otherVar = getComputedStyle(otherTag).backgroundColor;
+    var cbtVar = getComputedStyle(cbtTag, '::before').backgroundColor;
+    var otherVar = getComputedStyle(otherTag, '::before').backgroundColor;
     var segOn = document.querySelector('#dash .prow[data-ch="Gofo"] .seg-line');
     var segOff = document.querySelector('#dash .prow[data-ch="CBT"] .seg-line');
     var onColor = getComputedStyle(segOn.querySelector('.seg-name')).color;
@@ -207,7 +224,8 @@ const chrome = T.launchChrome({ port: PORT, userDataDir: USER_DIR });
     var rowOffClass = document.querySelector('#dash .prow[data-ch="CBT"]').classList.contains('off');
     /* 恢复 */
     document.querySelector('#dash .chn[data-ch="CBT"]').click();
-    var restored = getComputedStyle(document.querySelector('#dash .chn[data-ch="CBT"]')).backgroundColor;
+    await settleChannel();
+    var restored = getComputedStyle(document.querySelector('#dash .chn[data-ch="CBT"]'), '::before').backgroundColor;
     return JSON.stringify({cbtVar: cbtVar, otherVar: otherVar, segOnColor: onColor, segOffColor: offColor, offClass: offClass,
       arrOn: arrOn, arrOff: arrOff, pvalOff: pvalOff, avalOff: avalOff, rowOffClass: rowOffClass,
       restoredOk: restored === otherVar || restored !== cbtVar});
@@ -241,7 +259,8 @@ const chrome = T.launchChrome({ port: PORT, userDataDir: USER_DIR });
       same: JSON.stringify(before) === JSON.stringify(after),
       clsFlipped: clsBefore !== el2.className,
       paperMaster: {text: paperMaster.textContent, some: paperMaster.classList.contains('some')},
-      count: cnt
+      count: cnt,
+      selectedTotal: document.querySelector('#dash .urowe td.num').textContent
     });
   })()`);
   const st = JSON.parse(stable);
@@ -274,6 +293,9 @@ const chrome = T.launchChrome({ port: PORT, userDataDir: USER_DIR });
   /* 渠道全选框功能：全选/全不选 */
   await evalJs(`(function(){document.querySelector('#dash [data-master="ch"].tog').click();return 1;})()`);
   assert(await evalJs(`window.__dshTest.state.modes.normal.sel.channels.size`) === 12, '渠道全选框点击后应全选');
+  assert(await evalJs(`document.querySelector('#dash .urowe td.num').textContent`) === st.selectedTotal, '渠道全选只恢复渠道，必须保留已关闭分段的选择状态');
+  assert(await evalJs(`window.__dshTest.state.modes.normal.sel.segs.has('CBT|单件paper-1')`) === false, '渠道全选不应擅自重新激活单独取消的分段');
+  await evalJs(`document.querySelector('#dash .seg-line[data-seg="CBT|单件paper-1"]').click()`);
   assert(await evalJs(`document.querySelector('#dash .urowe td.num').textContent`) === '5700', '全选后订单总量应回 5700');
   await evalJs(`(function(){document.querySelector('#dash [data-master="ch"].tog').click();return 1;})()`);
   assert(await evalJs(`window.__dshTest.state.modes.normal.sel.channels.size`) === 0, '渠道全选框再次点击应全不选');
@@ -404,7 +426,7 @@ const chrome = T.launchChrome({ port: PORT, userDataDir: USER_DIR });
     var chnTag = document.querySelector('#dash .chn[data-ch="CBT"]');
     return JSON.stringify({
       chOff: !m.channels.has('CBT'),
-      chTagGray: getComputedStyle(chnTag).backgroundColor === 'rgb(139, 148, 158)'
+      chTagGray: getComputedStyle(chnTag, '::before').backgroundColor === 'rgb(139, 148, 158)'
     });
   })()`);
   const ao = JSON.parse(autoOff);
@@ -450,7 +472,7 @@ const chrome = T.launchChrome({ port: PORT, userDataDir: USER_DIR });
   assert(expStatus.indexOf('已导出') === 0, '导出状态错误: ' + expStatus);
   const b64buf = await evalJs(`window.__dshTest.buildExportBuffer()`);
   assert(typeof b64buf === 'string' && b64buf.length > 100000, '导出缓冲区异常: ' + (b64buf ? b64buf.length : 'null'));
-  fs.writeFileSync(path.join(__dirname, 'tmp', 'e2e-export-click.xlsx'), Buffer.from(b64buf, 'base64'));
+  fs.writeFileSync(P.tmp('e2e-export-click.xlsx'), Buffer.from(b64buf, 'base64'));
   await evalJs(`(function(){
     document.querySelector('#dash [data-master="ch"].tog').click();
     return 1;
@@ -507,10 +529,10 @@ const chrome = T.launchChrome({ port: PORT, userDataDir: USER_DIR });
   const cf = JSON.parse(cfg);
   assert(cf.themeListShown === true && cf.themeDropsDown === true && cf.listOverTable === true, '主题列表应从按钮下方弹出并覆盖表格: ' + JSON.stringify(cf));
   assert(cf.themeBtnTxt === '主题' && cf.themeBtnTitle === '当前主题：黄天当立', '主题按钮文案应保持「主题」: ' + JSON.stringify(cf));
-  assert(cf.yellowAttr === 'yellow' && cf.yellowBg === 'rgb(26, 20, 8)', '黄天当立主题未生效: ' + JSON.stringify(cf));
-  assert(cf.jadeAttr === 'jade' && cf.jadeBg === 'rgb(12, 26, 22)', '蟠青丛翠主题未生效: ' + JSON.stringify(cf));
-  assert(cf.reddustAttr === 'reddust' && cf.reddustBg === 'rgb(26, 13, 13)', '万丈红尘主题未生效: ' + JSON.stringify(cf));
-  assert(cf.seaclearAttr === 'seaclear' && cf.seaclearBg === 'rgb(6, 18, 26)', '海晏河清主题未生效: ' + JSON.stringify(cf));
+  assert(cf.yellowAttr === 'yellow' && cf.yellowBg === 'rgb(48, 37, 12)', '黄天当立主题未生效: ' + JSON.stringify(cf));
+  assert(cf.jadeAttr === 'jade' && cf.jadeBg === 'rgb(13, 48, 37)', '蟠青丛翠主题未生效: ' + JSON.stringify(cf));
+  assert(cf.reddustAttr === 'reddust' && cf.reddustBg === 'rgb(57, 21, 28)', '万丈红尘主题未生效: ' + JSON.stringify(cf));
+  assert(cf.seaclearAttr === 'seaclear' && cf.seaclearBg === 'rgb(10, 48, 67)', '海晏河清主题未生效: ' + JSON.stringify(cf));
   assert(cf.draculaBack === 'dracula', '光耀紫府应可重新选中: ' + JSON.stringify(cf));
   assert(cf.hiddenByEsc === true && cf.reshown === true && cf.hiddenByOutside === true, '主题列表 Esc/点击外部关闭失败: ' + JSON.stringify(cf));
   /* 主题抽查：五档背景色 */
@@ -527,7 +549,7 @@ const chrome = T.launchChrome({ port: PORT, userDataDir: USER_DIR });
     return JSON.stringify(out);
   })()`);
   const als = JSON.parse(alt);
-  assert(als[0] === 'rgb(26, 20, 8)' && als[1] === 'rgb(12, 26, 22)' && als[2] === 'rgb(26, 13, 13)' && als[3] === 'rgb(6, 18, 26)' && als[4] === 'rgb(40, 42, 54)',
+  assert(als[0] === 'rgb(48, 37, 12)' && als[1] === 'rgb(13, 48, 37)' && als[2] === 'rgb(57, 21, 28)' && als[3] === 'rgb(10, 48, 67)' && als[4] === 'rgb(28, 23, 48)',
     '主题五档切换未生效: ' + JSON.stringify(als));
   console.log('✔ 主题按钮：点击直接向下弹出列表（覆盖表格），四档主题生效，Esc/点击外部关闭');
   /* 11. 拖动 + Alt+↓ */
@@ -601,10 +623,4 @@ const chrome = T.launchChrome({ port: PORT, userDataDir: USER_DIR });
   console.log('✔ 参数改动后滚动位置与列几何保持不变');
 
   console.log('\n端到端测试（固定列宽版）全部通过 ✅');
-  chrome.kill();
-  process.exit(0);
-})().catch(e => {
-  console.error('✘ 测试失败:', e.message);
-  try { chrome.kill(); } catch (err) { }
-  process.exit(1);
 });

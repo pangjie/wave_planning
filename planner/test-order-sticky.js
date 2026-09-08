@@ -3,12 +3,8 @@
 const T = require('./test-helpers.js');
 
 const P = T.paths(__dirname);
-const PORT = 9340;
-const USER_DIR = P.tmp('order-sticky-profile');
-const chrome = T.launchChrome({ port: PORT, userDataDir: USER_DIR });
-
-T.withChrome(chrome, async () => {
-  const ws = await T.connectCdp({ port: PORT });
+T.withChrome({}, async chrome => {
+  const ws = await T.connectCdp({ chrome });
   const drv = T.createDriver(ws);
   const { send, evalJs, poll } = drv;
   await drv.enablePage();

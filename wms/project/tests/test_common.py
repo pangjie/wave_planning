@@ -1,3 +1,4 @@
+import asyncio
 import sqlite3
 
 import pytest
@@ -97,16 +98,102 @@ async def test_close_error_does_not_mask_original_exception(monkeypatch) -> None
 
 
 @pytest.mark.asyncio
-async def test_close_error_on_success_path_still_surfaces(monkeypatch) -> None:
-    """成功路径上 close() 失败仍要暴露（浏览器未正常关闭是真实异常）。"""
+async def test_close_error_on_success_path_is_a_visible_warning(monkeypatch) -> None:
+    """成功路径的关闭故障可见，但不能覆盖已确认结果。"""
     context = _FakeContext(
         close_error=RuntimeError("Target page, context or browser has been closed")
     )
     monkeypatch.setattr(common, "async_playwright", lambda: _FakePlaywright(context))
     settings = Settings.from_environment()
 
-    with pytest.raises(RuntimeError, match="has been closed"):
-        async with common.open_browser_context(settings, headless=True):
-            pass
+    warnings = []
+    async with common.open_browser_context(settings, headless=True, cleanup_warnings=warnings):
+        confirmed = "confirmed result"
 
+    assert confirmed == "confirmed result"
+    assert len(warnings) == 1 and "has been closed" in warnings[0]
     assert context.close_calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("body_failure", [None, RuntimeError("original operation"), asyncio.CancelledError()])
+async def test_driver_shutdown_error_never_replaces_result_or_original_error(monkeypatch, body_failure):
+    context = _FakeContext(close_error=RuntimeError("context close"))
+
+    class Driver(_FakePlaywright):
+        async def __aexit__(self, *exc):
+            raise RuntimeError("driver close")
+
+    monkeypatch.setattr(common, "async_playwright", lambda: Driver(context))
+    warnings = []
+
+    async def execute():
+        async with common.open_browser_context(Settings.from_environment(), headless=True, cleanup_warnings=warnings):
+            if body_failure is not None:
+                raise body_failure
+            return "confirmed"
+
+    if body_failure is None:
+        assert await execute() == "confirmed"
+    else:
+        with pytest.raises(type(body_failure)) as raised:
+            await execute()
+        assert raised.value is body_failure
+    assert len(warnings) == 2
+    assert "context close" in warnings[0] and "driver close" in warnings[1]
+
+
+@pytest.mark.asyncio
+async def test_launch_failure_still_stops_driver_and_preserves_launch_error(monkeypatch):
+    context = _FakeContext()
+    driver = _FakePlaywright(context)
+
+    async def launch(**_):
+        raise RuntimeError("launch failure")
+
+    driver.chromium.launch_persistent_context = launch
+
+    class Manager(_FakePlaywright):
+        async def __aexit__(self, *exc):
+            raise RuntimeError("driver failure")
+
+    manager = Manager(context)
+    manager.chromium = driver.chromium
+    monkeypatch.setattr(common, "async_playwright", lambda: manager)
+    warnings = []
+    with pytest.raises(RuntimeError, match="launch failure"):
+        async with common.open_browser_context(Settings.from_environment(), headless=True, cleanup_warnings=warnings):
+            pytest.fail("must not enter")
+    assert context.close_calls == 0
+    assert "driver failure" in warnings[0]
+
+
+@pytest.mark.asyncio
+async def test_cleanup_warning_collectors_are_scoped_and_inherited_by_child_tasks(monkeypatch):
+    monkeypatch.setattr(common, "async_playwright", lambda: _FakePlaywright(_FakeContext()))
+    settings = Settings.from_environment()
+    outer, inner = [], []
+
+    async def fail():
+        raise RuntimeError("failure")
+
+    async with common.open_browser_context(settings, headless=True, cleanup_warnings=outer):
+        await asyncio.create_task(common.run_cleanup(fail, "outer child"))
+        async with common.open_browser_context(settings, headless=True, cleanup_warnings=inner):
+            await common.run_cleanup(fail, "inner")
+        await common.run_cleanup(fail, "outer again")
+    await common.run_cleanup(fail, "not attached")
+    assert len(outer) == 2 and len(inner) == 1
+    assert all("outer" in warning for warning in outer)
+    assert "inner" in inner[0]
+
+
+@pytest.mark.asyncio
+async def test_cleanup_does_not_swallow_cancellation():
+    async def cancelled():
+        raise asyncio.CancelledError()
+
+    warnings = []
+    with pytest.raises(asyncio.CancelledError):
+        await common.run_cleanup(cancelled, "closing", warnings)
+    assert warnings == []

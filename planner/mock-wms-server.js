@@ -1,16 +1,24 @@
-/* 模拟 WMS 本地服务（8000）：供 test-wms-ui.js 与集成验证复用。
+/* 独立随机回环端口的模拟 WMS：供 test-wms-ui.js 与集成验证复用。
  * 行为：health/jobs 增删查/取消/导出文件下载 + 测试控制面（/api/__test/*）。
  * 独立于共享基建 test-helpers.js，便于单独维护。 */
 'use strict';
 const fs = require('fs');
 const http = require('http');
 
-function createMockServer({ samplePath, htmlSource, site = 'http://127.0.0.1:8000', waveRecords = [] }) {
+function createMockServer({ samplePath, htmlSource, waveRecords = [] }) {
+  const timers = new Set();
+  const later = (fn, ms) => {
+    const timer = setTimeout(() => { timers.delete(timer); fn(); }, ms);
+    timers.add(timer);
+    return timer;
+  };
   let jobSeq = 0;
   const jobs = new Map();
   const requests = [];
   const exports = new Map();  // 文件名 -> 字节
+  const plans = new Map();
   let failSegment = null;    // 测试注入：{channel, seg_name} 命中即该分段生成失败
+  let failClear = false;
 
   function now() { return new Date().toISOString(); }
   function mkJob(mode, browserMode, waveNos) {
@@ -50,12 +58,16 @@ function createMockServer({ samplePath, htmlSource, site = 'http://127.0.0.1:800
   }
 
   const server = http.createServer(async (req, res) => {
-    const url = new URL(req.url, site);
+    const url = new URL(req.url, 'http://127.0.0.1');
     const p = url.pathname;
     try {
       /* 测试控制面 */
       if (p === '/api/__test/requests') return json(res, 200, requests);
       if (p === '/api/__test/clear') { requests.length = 0; return json(res, 200, { ok: true }); }
+      if (p === '/api/__test/fail-history-clear' && req.method === 'POST') {
+        failClear = !!(await readBody(req)).enabled;
+        return json(res, 200, { ok: true });
+      }
       if (p === '/api/__test/fail-segment' && req.method === 'POST') {
         const body = await readBody(req);
         failSegment = (body && body.channel && body.seg_name)
@@ -67,10 +79,14 @@ function createMockServer({ samplePath, htmlSource, site = 'http://127.0.0.1:800
       if (p === '/api/health') return json(res, 200, { status: 'ok' });
 
       if (p === '/api/wave-records' && req.method === 'GET') {
-        return json(res, 200, waveRecords);
+        return json(res, 200, url.searchParams.has('batch_id') ? waveRecords.filter(r =>
+          r.batch_id === url.searchParams.get('batch_id') && r.plan_id === url.searchParams.get('plan_id')) : waveRecords);
       }
       if (p === '/api/wave-records/clear' && req.method === 'POST') {
-        waveRecords.length = 0;
+        if (failClear) return json(res, 503, { detail: '模拟历史保存失败' });
+        const keep = waveRecords.filter(r => (r.batch_id || null) !== url.searchParams.get('batch_id') ||
+          (r.plan_id || null) !== url.searchParams.get('plan_id'));
+        waveRecords.splice(0, waveRecords.length, ...keep);
         return json(res, 200, { status: 'ok' });
       }
       if (p === '/api/__test/wave-records' && req.method === 'POST') {
@@ -108,6 +124,21 @@ function createMockServer({ samplePath, htmlSource, site = 'http://127.0.0.1:800
       if (p === '/api/jobs' && req.method === 'GET') {
         return json(res, 200, [...jobs.values()].sort((a, b) => (a.created_at < b.created_at ? 1 : -1)));
       }
+      const planRoute = p.match(/^\/api\/jobs\/([^/]+)\/plan$/);
+      if (planRoute && req.method === 'GET') {
+        const plan = plans.get(planRoute[1]);
+        return json(res, plan ? 200 : 404, plan || { detail: '没有快照' });
+      }
+      const savePlanRoute = p.match(/^\/api\/jobs\/([^/]+)\/planning-export$/);
+      if (savePlanRoute && req.method === 'POST') {
+        const job = jobs.get(savePlanRoute[1]);
+        if (!job || !job.has_plan_snapshot) return json(res, 404, { detail: '没有快照' });
+        const bytes = await readBodyRaw(req);
+        const name = '波次规划-' + job.id + '.xlsx';
+        if (!exports.has(name)) exports.set(name, bytes);
+        job.planning_export_file = name;
+        return json(res, 200, { file: name, url: '/api/exports/' + encodeURIComponent(name) });
+      }
       if (p === '/api/jobs' && req.method === 'POST') {
         const body = await readBody(req);
         requests.push({ mode: body.mode, confirm_production: body.confirm_production, wave_nos: body.wave_nos, browser_mode: body.browser_mode, segments: body.segments });
@@ -120,11 +151,16 @@ function createMockServer({ samplePath, htmlSource, site = 'http://127.0.0.1:800
           if (body.mode === 'print_waves' && !waves.length) return json(res, 422, { detail: '打印选中波次时必须至少提供一个波次号。' });
         }
         const job = mkJob(body.mode, body.browser_mode || 'headed', waves);
+        job.segments = body.segments || [];
+        job.batch_id = body.batch_id;
+        job.plan_id = body.plan_id;
+        job.has_plan_snapshot = !!body.plan_snapshot;
+        if (body.plan_snapshot) plans.set(job.id, { batch_id: body.batch_id, plan_id: body.plan_id, snapshot: body.plan_snapshot });
         if (body.mode === 'export') {
-          setTimeout(() => {
+          later(() => {
             pushEvent(job, 'opened', '已打开出库订单页，等待数据加载。');
             pushEvent(job, 'template', '模板「渠道拆分」校验通过，关键字段齐全。');
-            setTimeout(() => {
+            later(() => {
               job.status = 'succeeded';
               job.updated_at = now();
               job.result = {
@@ -137,9 +173,9 @@ function createMockServer({ samplePath, htmlSource, site = 'http://127.0.0.1:800
             }, 900);
           }, 300);
         } else if (body.mode === 'print_waves') {
-          setTimeout(() => {
+          later(() => {
             pushEvent(job, 'printing', '开始打印波次 ' + waves.join('、'));
-            setTimeout(() => {
+            later(() => {
               job.status = 'succeeded';
               job.updated_at = now();
               job.result = {
@@ -163,13 +199,15 @@ function createMockServer({ samplePath, htmlSource, site = 'http://127.0.0.1:800
               note: fail ? '搜索结果总数与目标不一致（模拟数量核对失败），已停止。' : null
             };
           });
-          setTimeout(() => {
+          later(() => {
             pushEvent(job, 'searching', `将为 ${segs.length} 个分段生成波次（模拟）。`);
             /* 逐段上报波次号：模拟“生成一个记录一个变绿一个”；失败段上报 segment_failed */
             segs.forEach((sg, i) => {
-              setTimeout(() => {
+              later(() => {
                 if (job.status !== 'running') return;
                 if (sg.wave_no) {
+                  waveRecords.push({ ...sg, batch_id: job.batch_id, plan_id: job.plan_id, job_id: job.id,
+                    order_nos: job.segments[i].order_nos });
                   pushEvent(job, 'segment_wave', JSON.stringify({
                     channel: sg.channel, seg_name: sg.seg_name, wave_no: sg.wave_no
                   }));
@@ -178,7 +216,7 @@ function createMockServer({ samplePath, htmlSource, site = 'http://127.0.0.1:800
                 }
               }, 400 + i * 250);
             });
-            setTimeout(() => {
+            later(() => {
               if (job.status !== 'running') return;
               const failed = segs.filter(s => !s.wave_no).length;
               job.status = failed ? 'partial' : 'succeeded';
@@ -197,7 +235,7 @@ function createMockServer({ samplePath, htmlSource, site = 'http://127.0.0.1:800
             }, 400 + segs.length * 250 + 250);
           }, 200);
         } else { /* pick_waves：保持运行，供取消流程测试 */
-          setTimeout(() => {
+          later(() => {
             pushEvent(job, 'snapshot', '已锁定待拣货波次快照（' + (waves.length || 3) + ' 个）。');
           }, 200);
         }
@@ -253,11 +291,16 @@ function createMockServer({ samplePath, htmlSource, site = 'http://127.0.0.1:800
     server,
     requests,
     jobs,
-    listen: (port, host) => new Promise((resolve, reject) => {
+    listen: () => new Promise((resolve, reject) => {
       server.once('error', reject);
-      server.listen(port, host, () => { server.removeListener('error', reject); resolve(); });
+      server.listen(0, '127.0.0.1', () => {
+        server.removeListener('error', reject);
+        resolve('http://127.0.0.1:' + server.address().port);
+      });
     }),
     close: () => new Promise(r => {
+      timers.forEach(clearTimeout);
+      timers.clear();
       if (server.closeAllConnections) server.closeAllConnections();
       server.close(r);
     })

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Literal
 
@@ -31,6 +31,7 @@ class ExportResult:
     task_filename: str | None = None
     downloaded_file: str | None = None
     downloaded_copy: str | None = None
+    warnings: list[str] = field(default_factory=list)
 
 
 class WmsExportAutomation:
@@ -52,18 +53,20 @@ class WmsExportAutomation:
             "launching",
             f"正在以{browser_label}模式启动专用浏览器。",
         )
+        warnings: list[str] = []
         reset_browser_download_state(self.settings.browser_profile_dir)
         async with open_browser_context(
             self.settings,
             headless=effective_headless,
             downloads_dir=self.settings.downloads_dir,
+            cleanup_warnings=warnings,
         ) as context:
             page = await first_page(context)
             message, selected_template, task = await self._prepare_and_submit(
                 page, progress
             )
             await progress("downloading", f"导出已完成，正在下载 {task.filename}")
-            downloaded_file = await self.task_center.download(page, task)
+            downloaded_file = await self.task_center.download(page, task, warnings=warnings)
             return ExportResult(
                 mode="export",
                 template=selected_template,
@@ -72,6 +75,7 @@ class WmsExportAutomation:
                 completed_at=datetime.now().astimezone().isoformat(),
                 task_filename=task.filename,
                 downloaded_file=str(downloaded_file),
+                warnings=warnings,
             )
 
     async def _prepare_and_submit(

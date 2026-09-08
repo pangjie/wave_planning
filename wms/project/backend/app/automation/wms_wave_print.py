@@ -27,6 +27,8 @@ from app.automation.common import (
     first_page,
     normalize_wave_nos,
     open_browser_context,
+    record_cleanup_warning,
+    run_cleanup,
     resolve_headless,
     wait_for_input_value,
     wait_for_loading,
@@ -132,7 +134,10 @@ class QpdfMerger:
             _validate_pdf(temporary, label="合并文件")
             os.replace(temporary, output)
         finally:
-            temporary.unlink(missing_ok=True)
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError as exc:
+                record_cleanup_warning("清理 PDF 合并临时文件", exc)
 
 
 class WmsWavePrintAutomation:
@@ -168,16 +173,20 @@ class WmsWavePrintAutomation:
             f"{merged_output_name}。",
         )
 
+        cleanup_warnings: list[str] = []
         async with open_browser_context(
             self.settings,
             headless=effective_headless,
+            cleanup_warnings=cleanup_warnings,
         ) as context:
-            return await self._run_selected(
+            result = await self._run_selected(
                 context,
                 progress,
                 selected,
                 merged_output_name,
             )
+        result.warnings.extend(cleanup_warnings)
+        return result
 
     def _validate_request(
         self,
@@ -496,8 +505,8 @@ class WmsWavePrintAutomation:
             await self._save_pdf(print_page, wave_no, output)
             return output
         finally:
-            if print_page is not control_page and not print_page.is_closed():
-                await print_page.close()
+            if print_page is not control_page:
+                await run_cleanup(print_page.close, f"关闭波次 {wave_no} 打印页面")
 
     async def _confirm_dom_reprint_prompt(self, page: Page, wave_no: str) -> bool:
         selectors = self.config.wave_printing.selectors
@@ -883,9 +892,12 @@ class WmsWavePrintAutomation:
                 "可改用无头模式重试，或检查打印中心页面结构。"
             ) from exc
         finally:
-            if render_page is not None and not render_page.is_closed():
-                await render_page.close()
-            temporary.unlink(missing_ok=True)
+            if render_page is not None:
+                await run_cleanup(render_page.close, f"关闭波次 {wave_no} PDF 渲染页面")
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError as exc:
+                record_cleanup_warning(f"清理波次 {wave_no} PDF 临时文件", exc)
 
     @staticmethod
     async def _capture_print_preview(page: Page) -> dict[str, object]:

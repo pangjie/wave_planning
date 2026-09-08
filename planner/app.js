@@ -43,6 +43,43 @@
   };
 
   function modeKey() { return state.merged ? 'merged' : 'normal'; }
+  // 每次导入都有独立身份；计划改动产生新身份，不用名称猜测旧波次归属。
+  function newPlanId() {
+    return Date.now().toString(36) + '-' + Math.random().toString(36).slice(2) + '-' + Math.random().toString(36).slice(2);
+  }
+  function planIdentity() {
+    if (!state.batchId) state.batchId = newPlanId();
+    var m = ms();
+    var signature = JSON.stringify([state.batchId, state.merged, state.ordinaryEvolved,
+      m.unified, Array.from(m.per), m.order, Array.from(m.sel.channels).sort(), Array.from(m.sel.segs).sort()]);
+    if (state.planSignature !== signature) {
+      state.planSignature = signature;
+      state.planId = newPlanId();
+      state.waveNos = new Map();
+      document.querySelectorAll('.seg-line.waved').forEach(function (el) { el.classList.remove('waved'); });
+      if (wms) wmsInvalidateHistoryReads(false);
+    }
+    return { batch_id: state.batchId, plan_id: state.planId };
+  }
+  function planQuery(identity) {
+    return '?batch_id=' + encodeURIComponent(identity.batch_id) + '&plan_id=' + encodeURIComponent(identity.plan_id);
+  }
+  function sameOrders(left, right) {
+    if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return false;
+    var orders = new Set(left);
+    return orders.size === left.length && new Set(right).size === right.length && right.every(function (no) { return orders.has(no); });
+  }
+  function matchesCurrentSegment(identity, segment) {
+    var current = planIdentity();
+    if (!identity || identity.batch_id !== current.batch_id || identity.plan_id !== current.plan_id) return false;
+    return wmsEffectiveSegments().some(function (s) {
+      return s.channel === segment.channel && s.seg_name === segment.seg_name && sameOrders(s.order_nos, segment.order_nos);
+    });
+  }
+  function jobSegmentMatches(job, outcome) {
+    var segment = (job.segments || []).find(function (s) { return s.channel === outcome.channel && s.seg_name === outcome.seg_name; });
+    return !!segment && matchesCurrentSegment(job, segment);
+  }
   function ms() { return state.modes[modeKey()]; }
   function paramsResolver(key) {
     var m = state.modes[key];
@@ -111,7 +148,7 @@
     m.unified[p] = val;
     getAnalysis(key).channels.forEach(function (ch) {
       var pp = m.per.get(ch.id);
-      if (!pp) { pp = Object.assign({}, DEFAULT_UNIFIED); m.per.set(ch.id, pp); }
+      if (!pp) { pp = Object.assign({}, m.unified); m.per.set(ch.id, pp); }
       pp[p] = val;
     });
     invalidate(key);
@@ -210,9 +247,12 @@
   }
   /* ---------- 导入 ---------- */
   function clearData() {
+    wmsInvalidateHistoryReads();
     var keepN = state.modes.normal.unified;
     var keepM = state.modes.merged.unified;
     state.waveNos = new Map();
+    state.batchId = newPlanId();
+    state.planSignature = null;
     state.records = [];
     state.qtyMap = {};
     state.ordinaryEvolved = false;
@@ -468,6 +508,7 @@
     var tableLeft = oldTable ? oldTable.scrollLeft : 0;
     /* 调整参数产生的新分段/新渠道默认选中 */
     if (state.records.length) syncSelection(curAnalysis());
+    planIdentity();
     renderDash();
     renderBar();
     var newTable = out.querySelector('.twrap');
@@ -483,6 +524,7 @@
     return { channelSelected: m.sel.channels, segSelected: m.sel.segs, waveNos: state.waveNos };
   }
   function currentExportData() {
+    planIdentity();
     var m = ms();
     var a = curAnalysis();
     /* 渠道顺序与网页显示一致（手动拖动后的顺序） */
@@ -508,6 +550,7 @@
    * 交互（就地更新优先，不重渲染）
    * ============================================================= */
   function updateMarksInPlace() {
+    planIdentity();
     var oc = document.querySelector('#dash [data-order-total]');
     if (oc) oc.textContent = effectiveOrderSum();
     Array.prototype.forEach.call(document.querySelectorAll('#dash .prow[data-ch]'), function (row) {
@@ -560,6 +603,7 @@
     return { chId: key.slice(0, i), segName: key.slice(i + 1) };
   }
   function refreshSegLine(key) {
+    planIdentity();
     var el = segElOf(key);
     var p = segParts(key);
     var effOn = segEffectiveOn(p.chId, p.segName);
@@ -669,6 +713,7 @@
     updateMarksInPlace();
   }
   function toggleMerge() {
+    wmsInvalidateHistoryReads(false);
     state.merged = !state.merged;
     if (state.merged) {
       /* 归并后仅默认选中有订单的渠道；零订单渠道保持关闭。 */
@@ -998,20 +1043,10 @@
   }
 
   /* ---------- 初始化 ---------- */
-  function syncGutter() {
-    var out = $('out');
-    var g = Math.max(0, out.offsetWidth - out.clientWidth);
-    document.documentElement.style.setProperty('--gutter', g + 'px');
-    /* 页面最大宽度 = 表格容器宽 920 + 操作栏 200 + 左右留白 28 + 滚动条槽位 + 2px 余量，
-       确保任何平台的滚动条宽度下表格容器都不会被挤窄而产生横向滚动条 */
-    document.documentElement.style.setProperty('--shellmax', (920 + 200 + 28 + g + 2) + 'px');
-  }
   (function init() {
     bindEvents();
     render();
-    syncGutter();
     window.addEventListener('resize', function () {
-      syncGutter();
       if (state.records.length) render();
     });
   })();
@@ -1026,15 +1061,61 @@
   };
   var WMS_ACTIVE = ['queued', 'running'];
   var WMS_DONE = ['succeeded', 'partial', 'failed', 'cancelled'];
-  var wms = { available: false, job: null, jobId: null, timer: null, events: 0, active: false, clearPending: false, errStreak: 0, recTimer: null, healthTimer: null, mode: null, linkedExports: new Set(), headless: true, jobLinks: new Set(), restoredIds: new Set() };
+  var wms = { available: false, job: null, jobId: null, timer: null, events: 0, active: false, clearPending: false, errStreak: 0, recTimer: null, healthTimer: null, mode: null, linkedExports: new Set(), headless: true, jobLinks: new Set(), restoredIds: new Set(), pollEpoch: 0, pollRequest: null, submitting: false, cancelling: false, terminalJobs: new Set(), exportJobs: new Map(), historyEpoch: 0, historyRequest: null, clearQueue: Promise.resolve(), historyRetryLink: null };
 
-  function wmsClearWaveHistory() {
-    /* 历史不跨批次保留：清空本地波次号，并请求后端清空记录 */
+  function wmsInvalidateHistoryReads(advance) {
+    if (advance !== false) wms.historyEpoch += 1;
+    if (wms.historyRequest) {
+      clearTimeout(wms.historyRequest.timeout);
+      wms.historyRequest.controller.abort();
+    }
+    wms.historyRequest = null;
+  }
+  wms.planSnapshots = new Map();
+
+  function wmsClearWaveHistory(scope) {
+    scope = scope || planIdentity();
+    /* 先废弃读取，再串行清理；只有最新一代清理成功才能恢复同步。 */
+    wmsInvalidateHistoryReads();
+    var epoch = wms.historyEpoch;
     state.waveNos = new Map();
     wms.clearPending = true;
-    fetch('/api/wave-records/clear', { method: 'POST' })
-      .then(function (r) { if (r.ok) wms.clearPending = false; })
-      .catch(function () { });
+    if (wms.historyRetryLink) wms.historyRetryLink.remove();
+    wms.historyRetryLink = null;
+    wms.clearQueue = wms.clearQueue.then(async function () {
+      // 快速连续改参时，尚未开始的旧清理可合并到最新一次。
+      if (epoch !== wms.historyEpoch) return false;
+      try {
+        var resp = await fetch('/api/wave-records/clear' + planQuery(scope), { method: 'POST', signal: AbortSignal.timeout(10000) });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        if (epoch !== wms.historyEpoch) return false;
+        wms.clearPending = false;
+        return true;
+      } catch (e) {
+        if (epoch !== wms.historyEpoch) return false;
+        wmsLogLine('历史清理未确认，已暂停波次回填和新建波次：' + e.message + '。请重试清理；不要据此重复执行已有任务。', 'warn');
+        var line = document.createElement('div');
+        line.className = 'ev link';
+        var link = document.createElement('a');
+        link.href = '#';
+        link.textContent = '重试清理历史';
+        link.onclick = function (event) {
+          event.preventDefault();
+          if (epoch === wms.historyEpoch) wmsClearWaveHistory(scope);
+        };
+        line.appendChild(link);
+        $('wmsLog').appendChild(line);
+        wms.historyRetryLink = link;
+        return false;
+      }
+    });
+    return wms.clearQueue;
+  }
+  function wmsRestoreHistoryRetry() {
+    // 重建任务日志会移除旧链接；保留其清理代次检查，恢复同一个重试入口。
+    if (wms.clearPending && wms.historyRetryLink) {
+      $('wmsLog').appendChild(wms.historyRetryLink.parentNode);
+    }
   }
   function wmsRenderModeSel() {
     var btns = document.querySelectorAll('.side-wms .wms-mode');
@@ -1140,7 +1221,7 @@
           var wv = JSON.parse(ev.message);
           if (wv && wv.wave_no) {
             var key = wv.channel + '|' + wv.seg_name;
-            if (state.waveNos.get(key) !== wv.wave_no) {
+            if (jobSegmentMatches(job, wv) && state.waveNos.get(key) !== wv.wave_no) {
               state.waveNos.set(key, wv.wave_no);
               refreshSegLine(key);
               updateMarksInPlace();
@@ -1164,12 +1245,20 @@
   }
   function wmsStopPolling() {
     if (wms.timer) { clearInterval(wms.timer); wms.timer = null; }
+    wms.pollEpoch += 1;
+    var request = wms.pollRequest;
+    wms.pollRequest = null;
+    if (request) {
+      clearTimeout(request.timeout);
+      request.controller.abort();
+    }
   }
-  async function wmsAutoImport(job) {
+  async function wmsAutoImport(job, epoch) {
     try {
       var resp = await fetch('/api/jobs/' + job.id + '/file');
       if (!resp.ok) return;
       var buf = await resp.arrayBuffer();
+      if (epoch !== wms.pollEpoch) return;
       var name = (job.result && job.result.task_filename) || 'ParcelOutbound.xlsx';
       handleFile(new File([buf], name));
     } catch (e) { /* 自动导入失败不影响任务结果展示 */ }
@@ -1192,15 +1281,24 @@
     wmsLogLine(text);
   }
   async function wmsPollOnce() {
-    if (!wms.jobId) return;
+    if (!wms.jobId || wms.pollRequest || wms.cancelling) return;
+    var request = { jobId: wms.jobId, epoch: wms.pollEpoch, controller: new AbortController() };
+    wms.pollRequest = request;
+    request.timeout = setTimeout(function () { request.controller.abort(); }, 10000);
+    function current() {
+      return wms.pollRequest === request && wms.jobId === request.jobId && wms.pollEpoch === request.epoch;
+    }
     try {
-      var resp = await fetch('/api/jobs/' + wms.jobId);
+      var resp = await fetch('/api/jobs/' + request.jobId, { signal: request.controller.signal });
+      if (!current()) return;
       if (resp.status === 404) {
         wmsAbortPolling('任务记录不存在（本地服务可能已重启）。请刷新页面后重新提交任务。');
         return;
       }
-      if (!resp.ok) return;
+      if (!resp.ok) throw new Error('任务查询失败：HTTP ' + resp.status);
       var job = await resp.json();
+      if (!current()) return;
+      if (!job || job.id !== request.jobId) throw new Error('任务查询返回了不匹配的任务');
       wms.job = job;
       wmsRenderLog(job);
       wms.errStreak = 0;
@@ -1209,19 +1307,33 @@
         wmsStopPolling();
         wms.jobId = null;
         wmsSetBusy(false);
-        if (job.mode === 'generate_waves') await wmsApplyWaveNos(job);
-        else if (job.status === 'succeeded' && job.mode === 'export') await wmsAutoImport(job);
+        await wmsHandleTerminal(job);
       }
     } catch (e) {
+      if (!current()) return;
       /* 连接中断：连续失败约 30 次后停止轮询并恢复空闲 */
       wms.errStreak = (wms.errStreak || 0) + 1;
       if (wms.errStreak >= 30) wmsAbortPolling('无法连接本地 WMS 服务（' + wms.errStreak + ' 次失败）。请确认服务已启动后刷新页面。');
+    } finally {
+      clearTimeout(request.timeout);
+      if (wms.pollRequest === request) wms.pollRequest = null;
     }
   }
+  async function wmsHandleTerminal(job) {
+    // Polling, cancellation responses and restored completed plans share the
+    // same once-only result handling; clicking cancel cannot undo completion.
+    if (WMS_DONE.indexOf(job.status) === -1 || wms.terminalJobs.has(job.id)) return;
+    wms.terminalJobs.add(job.id);
+    if (job.mode === 'generate_waves') await wmsApplyWaveNos(job);
+    else if (job.status === 'succeeded' && job.mode === 'export') await wmsAutoImport(job, wms.pollEpoch);
+  }
   function wmsStartPolling(job, alreadyRendered) {
+    wmsInvalidateHistoryReads(false);
     wmsStopPolling();
     wms.job = job;
     wms.jobId = job.id;
+    wms.errStreak = 0;
+    wms.cancelling = false;
     if (!alreadyRendered) {
       wms.events = 0;
       var log = $('wmsLog');
@@ -1246,7 +1358,11 @@
     return segs;
   }
   async function wmsSubmit(mode) {
-    if (!mode || wms.active) return;
+    if (!mode || wms.active || wms.submitting) return;
+    if (mode === 'generate_waves' && wms.clearPending) {
+      status('历史清理尚未确认，请等待完成或在日志中重试清理后再建立波次。', 'err');
+      return;
+    }
     var waves = [];
     if (mode !== 'export') {
       var parsed = wmsParseWaves();
@@ -1266,13 +1382,22 @@
     if (mode === 'generate_waves') {
       body.segments = wmsEffectiveSegments();
       if (!body.segments.length) { status('没有可生成波次的分段：请先勾选渠道与分段', 'err'); return; }
+      Object.assign(body, planIdentity());
+      try {
+        body.plan_snapshot = JSON.parse(JSON.stringify({ version: 1, workbook: currentExportData() }));
+      } catch (e) { status('无法保存提交计划，未建立波次：' + e.message, 'err'); return; }
     } else if (mode !== 'export') body.wave_nos = waves;
+    wmsStopPolling();
+    var epoch = wms.pollEpoch;
+    wms.submitting = true;
     try {
       var resp = await fetch('/api/jobs', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body)
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(10000)
       });
+      if (epoch !== wms.pollEpoch) return;
       if (resp.status === 409) { status('已有任务在执行，请等待当前任务结束', 'err'); return; }
       if (!resp.ok) {
         var detail = '';
@@ -1281,26 +1406,45 @@
         return;
       }
       var job = await resp.json();
+      if (epoch !== wms.pollEpoch) return;
+      if (body.plan_snapshot && job.batch_id === body.batch_id && job.plan_id === body.plan_id) {
+        wms.planSnapshots.set(job.id, { batch_id: body.batch_id, plan_id: body.plan_id, snapshot: body.plan_snapshot });
+      }
       wmsStartPolling(job);
-    } catch (e) { status('无法连接本地 WMS 服务', 'err'); }
+    } catch (e) { if (epoch === wms.pollEpoch) status('提交结果未确认，请刷新查询任务状态，不要重复提交。', 'err'); }
+    finally { wms.submitting = false; }
   }
   async function wmsCancel() {
-    if (!wms.jobId) return;
+    if (!wms.jobId || wms.cancelling) return;
+    var id = wms.jobId;
+    wmsStopPolling(); // 取消请求发出即废弃旧查询，不能等其返回后再作废。
+    var epoch = wms.pollEpoch;
+    wms.cancelling = true;
+    function current() { return wms.jobId === id && wms.pollEpoch === epoch; }
     try {
-      var resp = await fetch('/api/jobs/' + wms.jobId + '/cancel', { method: 'POST' });
+      var resp = await fetch('/api/jobs/' + id + '/cancel', { method: 'POST', signal: AbortSignal.timeout(10000) });
+      if (!current()) return;
       if (resp.ok) {
         var job = await resp.json();
+        if (!current()) return;
+        if (!job || job.id !== id) throw new Error('取消响应的任务不匹配');
         wms.job = job;
         wmsRenderLog(job);
         wmsStopPolling();
         wms.jobId = null;
         wmsSetBusy(false);
+        await wmsHandleTerminal(job);
+      } else throw new Error('HTTP ' + resp.status);
+    } catch (e) {
+      if (current()) {
+        wmsLogLine('取消请求未确认，将继续查询本任务状态：' + e.message, 'warn');
+        wmsStartPolling(wms.job, true);
       }
-    } catch (e) { }
+    } finally { if (current() || !wms.jobId) wms.cancelling = false; }
   }
   /* 波次记录同步：从后端拉取已生成的波次号，回填到匹配分段（文字变绿）；导出统一在任务完成时进行 */
   async function wmsSyncWaveRecords() {
-    if (!wms.available || wms.active) return;
+    if (!wms.available || wms.active || wms.clearPending || wms.historyRequest) return;
     var a;
     try { a = curAnalysis(); } catch (e) { return; }
     if (!a) return;
@@ -1309,20 +1453,29 @@
       c.segments.forEach(function (s) { segKeys.add(c.id + '|' + s.name); });
     });
     if (!segKeys.size) return;
+    var identity = planIdentity();
+    var epoch = wms.historyEpoch;
+    var recordsAtStart = state.records;
+    var controller = new AbortController();
+    var request = { controller: controller, timeout: null };
+    var timeout = setTimeout(function () { controller.abort(); }, 10000);
+    request.timeout = timeout;
+    wms.historyRequest = request;
+    function current() {
+      return wms.historyRequest === request && epoch === wms.historyEpoch &&
+        wms.available && !wms.active && !wms.clearPending &&
+        recordsAtStart === state.records && a === curAnalysis() && identity.plan_id === planIdentity().plan_id;
+    }
     try {
-      var resp = await fetch('/api/wave-records');
-      if (!resp.ok) return;
+      var resp = await fetch('/api/wave-records' + planQuery(identity), { signal: controller.signal });
+      if (!current() || !resp.ok) return;
       var records = await resp.json();
-      if (wms.clearPending) {
-        /* 刚导入新文件：等待后端清理生效，期间不应用历史记录 */
-        if (!records || records.length === 0) wms.clearPending = false;
-        return;
-      }
+      if (!current() || !Array.isArray(records)) return;
       var changed = 0;
       (records || []).forEach(function (r) {
         if (!r || !r.wave_no) return;
         var key = r.channel + '|' + r.seg_name;
-        if (!segKeys.has(key)) return;
+        if (!segKeys.has(key) || !matchesCurrentSegment(r, r)) return;
         if (state.waveNos.get(key) === r.wave_no) return;
         state.waveNos.set(key, r.wave_no);
         refreshSegLine(key);
@@ -1332,7 +1485,11 @@
         updateMarksInPlace();
         wmsLogLine('后台同步：补充回填 ' + changed + ' 个已完成分段的波次号（页面累计 ' + state.waveNos.size + ' 个，对应分段已变绿）。', 'synced');
       }
-    } catch (e) { /* 连接中断静默重试 */ }
+    } catch (e) { /* 读取中断由下一轮查询恢复，不能充当清理成功。 */ }
+    finally {
+      clearTimeout(timeout);
+      if (wms.historyRequest === request) wms.historyRequest = null;
+    }
   }
   /* 生成波次完成：回填波次号（分段文字变绿），成功/部分完成时自动导出一次并给下载链接 */
   async function wmsApplyWaveNos(job) {
@@ -1343,7 +1500,7 @@
       if (o.wave_no) {
         anyWave = true;
         var key = o.channel + '|' + o.seg_name;
-        if (state.waveNos.get(key) !== o.wave_no) {
+        if (jobSegmentMatches(job, o) && state.waveNos.get(key) !== o.wave_no) {
           state.waveNos.set(key, o.wave_no);
           changed = true;
         }
@@ -1359,7 +1516,7 @@
       } catch (e) { }
     }
     if (anyWave && (job.status === 'succeeded' || job.status === 'partial')) {
-      await wmsAutoExport();
+      await wmsAutoExport(job);
     }
   }
   function wmsBuildExportBuffer() {
@@ -1394,31 +1551,72 @@
       })
       .catch(function () { });
   }
-  async function wmsAutoExport() {
-    try {
-      var buf = wmsBuildExportBuffer();
-      if (!buf) {
-        wmsLogLine('自动导出跳过：当前没有可导出的分段（请先勾选渠道与分段）。', 'warn');
-        return;
+  function wmsAutoExport(job) {
+    if (job.planning_export_file) { wmsRenderExportLinks(); return Promise.resolve(true); }
+    var entry = wms.exportJobs.get(job.id);
+    if (!entry) {
+      entry = { bytes: null, filename: '', pending: null, done: false, retryLink: null };
+      wms.exportJobs.set(job.id, entry);
+      if (!job.has_plan_snapshot || !job.batch_id || !job.plan_id) {
+        entry.unbound = true;
+        wmsLogLine('此任务没有可靠的提交计划快照，已保留日志，但不会回填或自动导出当前计划；无需重新生成波次。', 'warn');
       }
-      var d = new Date();
-      var ymd = '' + d.getFullYear() + String(d.getMonth() + 1).padStart(2, '0') + String(d.getDate()).padStart(2, '0');
-      var fname = '波次规划' + ymd + '.xlsx';
-      var u8 = Uint8Array.from(atob(buf), function (c) { return c.charCodeAt(0); });
-      var resp = await fetch('/api/exports?filename=' + encodeURIComponent(fname), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/octet-stream' },
-        body: u8
-      });
-      if (!resp.ok) {
-        wmsLogLine('自动导出失败：服务返回 ' + resp.status + '。', 'err');
-        return;
-      }
-      /* 日志追加下载链接（同时兼容刷新后从导出清单恢复） */
-      wmsRenderExportLinks();
-    } catch (e) {
-      wmsLogLine('自动导出失败：' + (e && e.message ? e.message : e) + '。', 'err');
     }
+    if (entry.done) return Promise.resolve(true);
+    if (entry.pending) return entry.pending;
+    if (entry.unbound) return Promise.resolve(false);
+    entry.pending = Promise.resolve().then(async function () {
+      try {
+        if (!entry.bytes) {
+          var saved = wms.planSnapshots.get(job.id);
+          if (!saved) {
+            var planResp = await fetch('/api/jobs/' + job.id + '/plan', { signal: AbortSignal.timeout(10000) });
+            if (!planResp.ok) throw new Error('提交计划快照读取失败：HTTP ' + planResp.status);
+            saved = await planResp.json();
+          }
+          if (saved.batch_id !== job.batch_id || saved.plan_id !== job.plan_id) throw new Error('提交计划身份不匹配');
+          var data = JSON.parse(JSON.stringify(saved.snapshot.workbook));
+          var table = data.sheets.find(function (s) { return s.name === '波次表'; });
+          if (!table || !Array.isArray(table.waveRefs) || table.waveRefs.length !== job.segments.length) throw new Error('提交计划波次表无效');
+          var outcomes = (job.result && job.result.segments) || [];
+          outcomes.forEach(function (o) {
+            if (!o.wave_no) return;
+            var ref = table.waveRefs.find(function (r) { return r.channel === o.channel && r.seg_name === o.seg_name; });
+            if (!ref || !table.aoa[ref.row]) throw new Error('已确认波次不属于提交计划');
+            table.aoa[ref.row][2] = o.wave_no;
+          });
+          entry.filename = data.filename;
+          entry.bytes = buildXlsxBuffer(data.sheets);
+        }
+        if (entry.retryLink) entry.retryLink.textContent = '保存中…';
+        var resp = await fetch('/api/jobs/' + job.id + '/planning-export', {
+          method: 'POST', headers: { 'Content-Type': 'application/octet-stream' },
+          body: entry.bytes, signal: AbortSignal.timeout(10000)
+        });
+        if (!resp.ok) throw new Error('服务返回 ' + resp.status);
+        entry.done = true;
+        entry.bytes = null;
+        wms.planSnapshots.delete(job.id);
+        if (entry.retryLink) { entry.retryLink.parentNode.remove(); entry.retryLink = null; }
+        wmsRenderExportLinks();
+        return true;
+      } catch (e) {
+        wmsLogLine('自动导出失败：' + (e && e.message ? e.message : e) + '。可重试保存文件，无需重新生成波次。', 'err');
+        if (!entry.retryLink) {
+          var line = document.createElement('div');
+          line.className = 'ev link';
+          var link = document.createElement('a');
+          link.href = '#';
+          link.onclick = function (event) { event.preventDefault(); wmsAutoExport(job); };
+          line.appendChild(link);
+          $('wmsLog').appendChild(line);
+          entry.retryLink = link;
+        }
+        entry.retryLink.textContent = '重试保存文件：' + (entry.filename || '波次规划');
+        return false;
+      }
+    }).finally(function () { entry.pending = null; });
+    return entry.pending;
   }
   function wmsEnsureHealthLoop() {
     if (wms.healthTimer) return;
@@ -1432,6 +1630,7 @@
   function wmsSetAvailable(ok) {
     wmsEnsureHealthLoop();
     if (wms.available === ok) return;  // 状态未变化时不动界面
+    if (!ok) wmsInvalidateHistoryReads(false);
     wms.available = ok;
     $('wmsSection').style.display = ok ? '' : 'none';
     $('wmsPanel').hidden = !ok;
@@ -1446,12 +1645,15 @@
       clearInterval(wms.recTimer);
       wms.recTimer = null;
     }
+    if (!ok) wmsAbortPolling('本地 WMS 服务连接已中断；恢复连接后将重新查询任务状态，请勿据此重复提交。');
   }
   async function wmsRestore() {
+    var epoch = wms.pollEpoch;
     try {
       var resp = await fetch('/api/jobs');
       if (resp.ok) {
         var jobs = await resp.json();
+        if (epoch !== wms.pollEpoch || wms.active || wms.submitting) return;
         if (jobs.length) {
           var log = $('wmsLog');
           if (!wms.restoredIds.size) log.innerHTML = '';
@@ -1473,11 +1675,18 @@
             wms.job = jobs[0];
             wmsRenderState();
           }
+          // 页面离线时已完成的计划也能从提交快照恢复导出，无需重新执行 WMS。
+          for (var j of jobs) {
+            if (j.mode === 'generate_waves' && (j.status === 'succeeded' || j.status === 'partial') && !wms.terminalJobs.has(j.id)) {
+              await wmsHandleTerminal(j);
+            }
+          }
         }
       }
     } catch (e) { }
     /* 日志重建完成后才追加当天波次规划导出链接，避免与日志重建竞争（先渲染后追加，防止被清空） */
     wmsRenderExportLinks();
+    wmsRestoreHistoryRetry();
   }
 
   /* 测试钩子 */

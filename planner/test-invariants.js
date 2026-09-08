@@ -10,16 +10,14 @@ const fs = require('fs');
 const T = require('./test-helpers.js');
 
 const P = T.paths(__dirname);
-const PORT = 9335;
-const USER_DIR = P.tmp('chrome-invariants');
 const HTML_SOURCE = path.join(__dirname, '..', 'wms', 'project', 'frontend', 'dist', 'index.html');
 const SAMPLE = P.sample;
 const { sleep, assert } = T;
 
 const XLSX = require('./vendor/xlsx.full.min.js');
 
-T.withChrome(T.launchChrome({ port: PORT, userDataDir: USER_DIR }), async () => {
-  const ws = await T.connectCdp({ port: PORT });
+T.withChrome({}, async chrome => {
+  const ws = await T.connectCdp({ chrome });
   const drv = T.createDriver(ws, { pollTries: 200 });
   const { send, evalJs, poll } = drv;
   await drv.enablePage();
@@ -33,31 +31,7 @@ T.withChrome(T.launchChrome({ port: PORT, userDataDir: USER_DIR }), async () => 
 
   /* 不变量 1：全部分段恰好覆盖全部订单 */
   async function checkAllocation(label) {
-    const info = await evalJs(`(function(){
-      var a = window.__dshTest.curAnalysis();
-      var segCount = 0, chTotal = 0, seen = new Set(), dup = 0, empty = 0;
-      a.channels.forEach(function (ch) {
-        chTotal += ch.total;
-        var chSeen = new Set();
-        ch.segments.forEach(function (s) {
-          segCount++;
-          if (!s.orderNos.length) empty++;
-          s.orderNos.forEach(function (no) {
-            if (seen.has(no)) dup++;
-            seen.add(no);
-            chSeen.add(no);
-          });
-        });
-        /* 渠道内分段订单并集必须等于渠道总数 */
-        if (chSeen.size !== ch.total) {
-          return JSON.stringify({ err: 'channel-mismatch', ch: ch.name, union: chSeen.size, total: ch.total });
-        }
-      });
-      return JSON.stringify({
-        total: window.__dshTest.state.records.length,
-        chTotal: chTotal, union: seen.size, dup: dup, empty: empty, segCount: segCount
-      });
-    })()`);
+    const info = await evalJs(`JSON.stringify((${T.allocationInfo.toString()})(window.__dshTest.curAnalysis(), window.__dshTest.state.records.length))`);
     const st = JSON.parse(info);
     if (st.err) { assert(false, label + ' 渠道订单错分: ' + info); }
     assert(st.total === st.chTotal, label + ' 渠道总数应等于记录总数: ' + info);
@@ -238,7 +212,7 @@ T.withChrome(T.launchChrome({ port: PORT, userDataDir: USER_DIR }), async () => 
       bg: getComputedStyle(document.body).backgroundColor
     });
   })()`));
-  assert(tAfter.theme === 'seaclear' && tAfter.bg === 'rgb(6, 18, 26)', '主题应生效: ' + JSON.stringify(tAfter));
+  assert(tAfter.theme === 'seaclear' && tAfter.bg === 'rgb(10, 48, 67)', '主题应生效: ' + JSON.stringify(tAfter));
   assert(tAfter.records === tBefore.records && tAfter.waveNos === tBefore.waveNos &&
     tAfter.twX === tBefore.twX && tAfter.twW === tBefore.twW,
     '主题切换不应影响页面数据与布局: ' + JSON.stringify(tBefore) + ' -> ' + JSON.stringify(tAfter));

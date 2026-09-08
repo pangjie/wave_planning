@@ -133,7 +133,7 @@ function trackingChannel(t) {
 function buildRecords(dataRows, headerMap) {
   var records = [];
   var byOrder = new Map(); // 出库单号 -> 订单记录（多行订单合并）
-  var qtyMap = {}; // 出库单号 -> 总数量（首次遇到）
+  var qtyMap = Object.create(null); // 出库单号 -> 总数量（首次遇到，不包含继承键）
   var col = headerMap.map;
   var skuCols = headerMap.skuIdx.map(function (s) { return s.ci; });
   var customerCol = customerColumnIndex(headerMap);
@@ -380,7 +380,8 @@ function splitOversizedHotSegments(hotSegs, qtyMap) {
       var chunk = seg.orderNos.slice(pos, pos + size);
       pos += size;
       segNo++;
-      out.push(finalizeSeg('hot', '爆品' + segNo, chunk, seg.skuPool, qtyMap));
+      var pool = k > 1 ? [{ sku: seg.skuPool[0].sku, count: chunk.length }] : seg.skuPool;
+      out.push(finalizeSeg('hot', '爆品' + segNo, chunk, pool, qtyMap));
     }
   }
   return out;
@@ -866,11 +867,12 @@ function sheetGroupSkuPool(blocks) {
 /* ---- 工作表三：波次表 ---- */
 function sheetWaveTable(blocks, waveNos) {
   var header = ['渠道类型', '姓名', '波次号', '类型', '分发时间', 'SKU数量', '应拣单数', '应拣件数', '结束时间'];
-  var aoa = [header.slice()], styles = [];
+  var aoa = [header.slice()], styles = [], waveRefs = [];
   for (var c = 0; c < 9; c++) styles.push({ r: 0, c: c, s: { font: { bold: true }, alignment: { horizontal: 'center', vertical: 'center' } } });
   blocks.forEach(function (b, bi) {
     b.segs.forEach(function (seg) {
       var r = aoa.length;
+      waveRefs.push({ channel: b.ch.id, seg_name: seg.name, row: r });
       var waveNo = waveNos ? (waveNos.get(b.ch.id + '|' + seg.name) || '') : '';
       aoa.push([
         b.ch.name + KIND_SHORT[seg.kind], '', waveNo, KIND_TYPE[seg.kind], '',
@@ -893,7 +895,7 @@ function sheetWaveTable(blocks, waveNos) {
   });
   return {
     name: '波次表',
-    aoa: aoa, styles: styles,
+    aoa: aoa, styles: styles, waveRefs: waveRefs,
     cols: [14, 12, 16, 11, 12, 10, 10, 10, 12].map(function (w) { return { wch: w }; }),
     autofilter: 'A1:I' + aoa.length
   };
@@ -1121,12 +1123,22 @@ function sheetSingleSeq(channels, selected, segSelected) {
   var sheet = seqSheetBase('单件SKU序列', selChans, 5, ['排序', 'SKU', '出现数量', '分段', '分段总订单数']);
   var rowsByCh = selChans.map(function (ch) {
     var rows = [], rank = 1;
+    var selectedSegments = ch.segments.filter(function (seg) { return segSelected.has(ch.id + '|' + seg.name); });
+    var orderSegment = new Map();
+    selectedSegments.forEach(function (seg) {
+      seg.orderNos.forEach(function (no) { orderSegment.set(no, seg.name); });
+    });
     ch.singleSeq.forEach(function (it) {
-      var segName = ch.singleSegMap.get(it.sku);
-      if (!segName) return;
-      if (!segSelected.has(ch.id + '|' + segName)) return;
-      var seg = ch.segByName.get(segName);
-      rows.push([rank++, it.sku, it.count, segDisplayName(segName), seg ? seg.orderCount : '']);
+      // 只统计原始单件订单与最终选中段的交集，不能混入同 SKU 的多件/混件。
+      var counts = new Map();
+      it.orderNos.forEach(function (no) {
+        var name = orderSegment.get(no);
+        if (name) counts.set(name, (counts.get(name) || 0) + 1);
+      });
+      selectedSegments.forEach(function (seg) {
+        var count = counts.get(seg.name);
+        if (count) rows.push([rank++, it.sku, count, segDisplayName(seg.name), seg.orderCount]);
+      });
     });
     return rows;
   });

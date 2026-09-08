@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import re
+import os
+import tempfile
+from contextlib import suppress
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -8,7 +11,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field, model_validator
 
 from app.automation.common import WAVE_NO_PATTERN
-from app.core.config import get_settings
+from app.core.config import AutomationConfig
 from app.services.job_manager import (
     ActiveJobConflictError,
     BrowserMode,
@@ -27,6 +30,9 @@ class CreateJobRequest(BaseModel):
     confirm_production: bool = False
     wave_nos: list[str] = Field(default_factory=list)
     segments: list[dict[str, object]] = Field(default_factory=list)
+    batch_id: str | None = None
+    plan_id: str | None = None
+    plan_snapshot: dict | None = None
 
     @model_validator(mode="after")
     def require_production_confirmation(self) -> "CreateJobRequest":
@@ -41,12 +47,21 @@ class CreateJobRequest(BaseModel):
         if self.mode == "generate_waves":
             normalized_segments: list[dict[str, object]] = []
             for seg in self.segments:
-                channel = str(seg.get("channel", "")).strip()
-                seg_name = str(seg.get("seg_name", "")).strip()
+                raw_channel = seg.get("channel", "")
+                raw_seg_name = seg.get("seg_name", "")
+                raw_order_nos = seg.get("order_nos", [])
+                if not isinstance(raw_channel, str) or not isinstance(raw_seg_name, str):
+                    raise ValueError("生成波次的渠道和分段名必须是字符串。")
+                if not isinstance(raw_order_nos, list):
+                    raise ValueError("生成波次的出库单号必须是字符串列表。")
+                channel = raw_channel.strip()
+                seg_name = raw_seg_name.strip()
                 order_nos: list[str] = []
                 seen: set[str] = set()
-                for raw in (seg.get("order_nos") or []):
-                    no = str(raw).strip()
+                for raw in raw_order_nos:
+                    if not isinstance(raw, str):
+                        raise ValueError("生成波次的每个出库单号必须是字符串。")
+                    no = raw.strip()
                     if not no or no in seen:
                         continue
                     if not WAVE_NO_PATTERN.fullmatch(no):
@@ -75,19 +90,25 @@ class CreateJobRequest(BaseModel):
             if not normalized:
                 if self.mode == "print_waves":
                     raise ValueError("打印选中波次时必须至少提供一个波次号。")
-            cfg = get_settings().load_automation()
-            limit = (
-                cfg.wave_printing.max_selected_waves
-                if self.mode == "print_waves"
-                else cfg.wave_picking.max_selected_waves
-            )
-            if len(normalized) > limit:
-                operation = "打印" if self.mode == "print_waves" else "拣货"
-                raise ValueError(f"一次最多{operation} {limit} 个不同波次。")
             self.wave_nos = normalized
         else:
             self.wave_nos = []
+        if any(v is not None for v in (self.batch_id, self.plan_id, self.plan_snapshot)):
+            if self.mode != "generate_waves" or not self.batch_id or not self.plan_id or self.plan_snapshot is None:
+                raise ValueError("计划身份与快照必须一起提交，且仅用于生成波次")
+            from app.services.job_plans import validate_plan
+            validate_plan(self.plan_snapshot, self.segments)
         return self
+
+    def validate_wave_limit(self, config: AutomationConfig) -> None:
+        """数量限制与执行器共用服务启动快照；普通结构校验不再读取磁盘。"""
+        if self.mode not in {"print_waves", "pick_waves"}:
+            return
+        limit = (config.wave_printing.max_selected_waves if self.mode == "print_waves"
+                 else config.wave_picking.max_selected_waves)
+        if len(self.wave_nos) > limit:
+            operation = "打印" if self.mode == "print_waves" else "拣货"
+            raise ValueError(f"一次最多{operation} {limit} 个不同波次。")
 
 
 def get_manager(request: Request) -> JobManager:
@@ -100,38 +121,54 @@ async def health() -> dict[str, str]:
 
 
 @router.get("/wave-records", response_model=list[dict[str, object]])
-async def wave_records(request: Request) -> list[dict[str, object]]:
+async def wave_records(request: Request, batch_id: str | None = None, plan_id: str | None = None) -> list[dict[str, object]]:
     """已生成波次的分段记录（渠道/分段/波次号），供规划页回填波次表并标记完成。"""
     from app.services.wave_records import read_records
 
     data_dir = request.app.state.settings.browser_profile_dir.parent
-    return read_records(data_dir)
+    try:
+        return read_records(data_dir, batch_id=batch_id, plan_id=plan_id)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=503, detail=f"波次历史读取失败：{exc}") from exc
 
 
 @router.post("/wave-records/clear")
-async def clear_wave_records(request: Request) -> dict[str, str]:
-    """导入新订单文件时清理既往波次历史（分段波次记录不跨批次保留）。"""
+async def clear_wave_records(request: Request, batch_id: str | None = None, plan_id: str | None = None) -> dict[str, str]:
+    """仅清理指定批次的指定计划；无身份旧客户端不影响新计划记录。"""
     from app.services.wave_records import clear_records
 
     data_dir = request.app.state.settings.browser_profile_dir.parent
-    clear_records(data_dir)
+    try:
+        clear_records(data_dir, batch_id=batch_id, plan_id=plan_id)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=503, detail=f"波次历史未清空，原记录已保留：{exc}") from exc
     return {"status": "ok"}
 
 
 @router.post("/jobs", response_model=JobRecord, status_code=status.HTTP_202_ACCEPTED)
 async def create_job(
     payload: CreateJobRequest,
+    request: Request,
     manager: JobManager = Depends(get_manager),
 ) -> JobRecord:
+    try:
+        payload.validate_wave_limit(request.app.state.automation_config)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     try:
         return manager.create(
             payload.mode,
             payload.browser_mode,
             wave_nos=payload.wave_nos,
             segments=payload.segments,
+            batch_id=payload.batch_id, plan_id=payload.plan_id, plan_snapshot=payload.plan_snapshot,
         )
     except ActiveJobConflictError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except (OSError, ValueError) as exc:
+        raise HTTPException(
+            status_code=503, detail=f"本地记录无法保存或读取，未启动 WMS 任务：{exc}"
+        ) from exc
 
 
 @router.get("/jobs", response_model=list[JobRecord])
@@ -155,6 +192,19 @@ async def cancel_job(job_id: str, manager: JobManager = Depends(get_manager)) ->
     return job
 
 
+@router.get("/jobs/{job_id}/plan")
+async def get_job_plan(job_id: str, manager: JobManager = Depends(get_manager)) -> dict:
+    from app.services.job_plans import read_plan
+    job = manager.get(job_id)
+    if not job or not job.has_plan_snapshot:
+        raise HTTPException(status_code=404, detail="此任务没有提交时的计划快照，不能用当前计划替代。")
+    try:
+        snapshot = read_plan(manager.wave_records_dir, job.id, job.segments)
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=503, detail=f"提交计划快照读取失败：{exc}") from exc
+    return {"batch_id": job.batch_id, "plan_id": job.plan_id, "snapshot": snapshot}
+
+
 @router.post("/exports")
 async def save_export(request: Request, filename: str = "") -> dict[str, str]:
     """保存规划工具生成的 Excel 到项目输出目录，供日志提供下载链接。
@@ -176,6 +226,47 @@ async def save_export(request: Request, filename: str = "") -> dict[str, str]:
         counter += 1
     target.write_bytes(body)
     return {"file": target.name, "url": f"/api/exports/{target.name}"}
+
+
+@router.post("/jobs/{job_id}/planning-export")
+async def save_job_export(job_id: str, request: Request, manager: JobManager = Depends(get_manager)) -> dict[str, str]:
+    """按任务只保存一份规划表；响应丢失或页面刷新后的重试不会新建副本。"""
+    job = manager.get(job_id)
+    if not job or not job.has_plan_snapshot:
+        raise HTTPException(status_code=404, detail="任务没有提交计划快照。")
+    if job.status in {"queued", "running"} or not any(
+        isinstance(s, dict) and s.get("wave_no") for s in (job.result or {}).get("segments", [])
+    ):
+        raise HTTPException(status_code=409, detail="任务尚无可导出的已确认波次。")
+    body = await request.body()
+    if len(body) < 1000 or body[:4] != b"PK\x03\x04":
+        raise HTTPException(status_code=400, detail="导出文件内容无效。")
+    outputs_dir = Path(request.app.state.settings.outputs_dir)
+    name = f"波次规划{job.created_at[:10].replace('-', '')}-{job.id}.xlsx"
+    target = outputs_dir / name
+    tmp = None
+    try:
+        outputs_dir.mkdir(parents=True, exist_ok=True)
+        # 以下写入无 await；单机服务的请求不会在存在检查与替换之间交错。
+        if not target.exists():
+            with tempfile.NamedTemporaryFile(dir=outputs_dir, prefix=".planning-", suffix=".tmp", delete=False) as stream:
+                tmp = Path(stream.name)
+                stream.write(body)
+            os.replace(tmp, target)
+        else:
+            with target.open("rb") as stream:
+                if target.stat().st_size < 1000 or stream.read(4) != b"PK\x03\x04":
+                    raise ValueError("已有规划导出文件不完整，已保留原文件，请先核对")
+        job.planning_export_file = name
+        if not manager._save_job(job, force=True):
+            raise OSError("文件已保存，但任务记录未确认；可以重试保存，不会重复生成文件")
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    finally:
+        if tmp is not None:
+            with suppress(FileNotFoundError):
+                tmp.unlink()
+    return {"file": name, "url": f"/api/exports/{name}"}
 
 
 @router.get("/exports", response_model=list[dict[str, object]])

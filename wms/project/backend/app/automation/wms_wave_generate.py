@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Literal
 
@@ -16,6 +16,7 @@ from app.automation.common import (
     first_page,
     open_browser_context,
     resolve_headless,
+    run_cleanup,
     wait_for_loading,
     wait_for_input_value,
 )
@@ -47,6 +48,7 @@ class WaveGenerateResult:
     segments: list[SegmentWaveOutcome]
     generated_count: int
     failed_count: int
+    warnings: list[str] = field(default_factory=list)
 
 
 def chunk_list(items: list[str], size: int) -> list[list[str]]:
@@ -54,15 +56,6 @@ def chunk_list(items: list[str], size: int) -> list[list[str]]:
     if size < 1:
         raise ValueError("chunk size must be positive")
     return [items[start:start + size] for start in range(0, len(items), size)]
-
-
-async def dialog_snippet(page: Page, selector: str) -> str:
-    """取当前弹窗文本片段（最多 300 字符），用于失败诊断。"""
-    try:
-        text = await page.locator(selector).first.inner_text(timeout=1500)
-        return " ".join(text.split())[:300]
-    except Exception:
-        return "(未捕获到弹窗内容)"
 
 
 class WmsWaveGenerateAutomation:
@@ -88,6 +81,7 @@ class WmsWaveGenerateAutomation:
     ) -> WaveGenerateResult:
         cfg = self.config
         effective_headless = resolve_headless(self.settings, headless)
+        warnings: list[str] = []
         browser_label = "无头" if effective_headless else "有头"
         await progress(
             "launching",
@@ -95,7 +89,7 @@ class WmsWaveGenerateAutomation:
             "每个分段只提交一次生成操作。",
         )
         async with open_browser_context(
-            self.settings, headless=effective_headless
+            self.settings, headless=effective_headless, cleanup_warnings=warnings
         ) as context:
             page = await first_page(context)
             await page.goto(cfg.target_url, timeout=cfg.timeouts_ms.navigation)
@@ -129,22 +123,27 @@ class WmsWaveGenerateAutomation:
                         f"分段 {label} 出库单号超过多项搜索单次上限，已跳过。",
                     )
                     continue
+                await progress(
+                    "searching",
+                    f"第 {index}/{total} 个分段：{label}，准备粘贴 {len(order_nos)} 个出库单号。",
+                )
                 try:
-                    await progress(
-                        "searching",
-                        f"第 {index}/{total} 个分段：{label}，准备粘贴 {len(order_nos)} 个出库单号。",
-                    )
                     wave_no = await self._generate_one(
                         page, order_nos, label, progress,
                         prev_expected=prev_count,
                     )
+                except AutomationError as exc:
+                    note = str(exc)
+                except Exception as exc:
+                    note = f"未预期错误：{exc}"
+                else:
                     outcomes.append(SegmentWaveOutcome(
                         channel=channel, seg_name=seg_name,
                         order_count=len(order_nos), wave_no=wave_no,
                         note=None if wave_no else "未能提取波次号",
                     ))
                     if wave_no:
-                        # 生成一个立即上报一个：前端轮询到该事件即变绿，后端立即持久化
+                        # 已确认生成；保存失败必须向外传播，不能误记为生成失败并继续下一段。
                         await progress(
                             "segment_wave",
                             json.dumps(
@@ -152,14 +151,37 @@ class WmsWaveGenerateAutomation:
                                     "channel": channel,
                                     "seg_name": seg_name,
                                     "wave_no": wave_no,
+                                    "order_count": len(order_nos),
                                 },
                                 ensure_ascii=False,
                             ),
                         )
-                except AutomationError as exc:
-                    note = str(exc)
-                except Exception as exc:
-                    note = f"未预期错误：{exc}"
+                    # 先确认并保存波次号，再收尾；弹窗关闭失败不是生成失败。
+                    cleaned = await run_cleanup(
+                        lambda: self._close_visible_dialogs(page),
+                        f"分段 {label} 的结果弹窗关闭",
+                        warnings,
+                    )
+                    if not cleaned and index < total:
+                        stop_note = (
+                            f"前一分段 {label} 的结果弹窗未能关闭，页面状态无法确认；"
+                            "本分段未执行，未提交生成波次，不自动重跑。"
+                        )
+                        warnings.append(
+                            f"已停止剩余 {total - index} 个分段，已确认的波次仍保留；"
+                            "请检查页面和结果后仅处理未执行分段。"
+                        )
+                        for remaining in segments[index:]:
+                            outcomes.append(SegmentWaveOutcome(
+                                channel=str(remaining.get("channel", "")),
+                                seg_name=str(remaining.get("seg_name", "")),
+                                order_count=sum(
+                                    bool(str(no).strip())
+                                    for no in (remaining.get("order_nos") or [])
+                                ),
+                                note=stop_note,
+                            ))
+                        break
                 if note:
                     outcomes.append(SegmentWaveOutcome(
                         channel=channel, seg_name=seg_name,
@@ -196,6 +218,7 @@ class WmsWaveGenerateAutomation:
                 segments=outcomes,
                 generated_count=generated,
                 failed_count=failed,
+                warnings=warnings,
             )
 
     async def _wait_for_page_ready(self, page: Page, progress: ProgressCallback) -> None:
@@ -345,9 +368,9 @@ class WmsWaveGenerateAutomation:
                 f"分段 {label}：调整分页后搜索结果数发生变化"
                 f"（待处理应为 {pending_expected}，当前为 {current_total}），已停止。"
             )
-        select_all = page.locator(sel.select_all_checkbox + ":visible").first
-        if await select_all.count() != 1:
-            raise AutomationError("表头全选框不唯一或不可见。")
+        select_all = await self._unique_visible_target(
+            page.locator(sel.select_all_checkbox), "表头全选框", timeouts.action,
+        )
         await select_all.click(timeout=timeouts.action)
         await self._verify_selected_total(page, label, pending_expected)
 
@@ -361,28 +384,44 @@ class WmsWaveGenerateAutomation:
             raise AutomationError("“按勾选数据”选项不唯一或不存在。")
         await by_selection.click(timeout=timeouts.action)
 
-        # 5) 排序规则：确保两条规则（库位 → SKU*数量）
-        await self._ensure_sort_rules(page, label)
+        # 5) 只在唯一、含排序规则的生成配置框内调整规则。
+        dialog_candidates = page.locator(sel.wave_dialog).filter(
+            has=page.locator(sel.sort_rule_rows).or_(page.locator(sel.sort_rule_add_btn)),
+        )
+        dialog = await self._unique_visible_target(
+            dialog_candidates, "生成波次配置框", timeouts.dialog,
+        )
+        await self._ensure_sort_rules(page, label, dialog=dialog)
 
         # 6) 确定生成（生产提交点，唯一一次）
-        confirm = page.locator(sel.wave_confirm_button).first
-        try:
-            await confirm.wait_for(state="visible", timeout=timeouts.dialog)
-        except PlaywrightTimeoutError as exc:
-            snippet = await dialog_snippet(page, sel.wave_dialog)
-            raise AutomationError(
-                f"分段 {label}：未找到生成波次配置框的“确定”按钮。弹窗内容片段：{snippet}"
-            ) from exc
-        if await confirm.is_disabled():
-            raise AutomationError("生成波次“确定”按钮不可用。")
+        # 规则调整期间若出现多个配置框，同样不能选择第一个继续提交。
+        dialog = await self._unique_visible_target(dialog_candidates, "生成波次配置框", timeouts.dialog)
+        confirm = await self._unique_visible_target(
+            page.locator(sel.wave_confirm_button).and_(dialog.locator("button")).filter(
+                has_text=re.compile(r"^\s*确定\s*$"),
+            ),
+            "生成波次“确定”按钮", timeouts.dialog,
+        )
         await confirm.click(timeout=timeouts.action)
 
-        # 7) 提取波次号
-        wave_no = await self._extract_wave_no(page, label)
+        # 7) 提取后立即交回 run 保存；页面收尾必须在确认记录之后。
+        return await self._extract_wave_no(page, label)
 
-        # 8) 关闭结果弹窗，避免遮挡下一分段的操作
-        await self._close_visible_dialogs(page)
-        return wave_no
+    @staticmethod
+    async def _unique_visible_target(candidates: Locator, label: str, timeout_ms: int) -> Locator:
+        """等待候选出现后检查完整集合，返回未切片定位器以保留点击时严格校验。"""
+        visible = candidates.filter(visible=True)
+        try:
+            # first 仅用于等待至少一个出现，绝不将它用于 count 或点击。
+            await visible.first.wait_for(state="visible", timeout=timeout_ms)
+        except PlaywrightTimeoutError as exc:
+            raise AutomationError(f"{label}不可见或不存在，未提交生成波次。") from exc
+        count = await visible.count()
+        if count != 1:
+            raise AutomationError(f"{label}不唯一或不存在（{count} 个候选），未提交生成波次。")
+        if await visible.is_disabled():
+            raise AutomationError(f"{label}不可用，未提交生成波次。")
+        return visible
 
     async def _close_visible_dialogs(self, page: Page) -> None:
         """关闭当前可见的系统弹窗（点关闭按钮，失败则按 Escape），最多尝试 3 轮。"""
@@ -391,10 +430,7 @@ class WmsWaveGenerateAutomation:
             '.el-message-box:visible, .el-message:visible'
         )
         for _round in range(3):
-            try:
-                count = await dialogs.count()
-            except Exception:
-                return
+            count = await dialogs.count()
             if count == 0:
                 return
             closed = False
@@ -417,6 +453,8 @@ class WmsWaveGenerateAutomation:
                 except Exception:
                     pass
             await page.wait_for_timeout(600)
+        if await dialogs.count():
+            raise AutomationError("结果弹窗在 3 次关闭尝试后仍可见。")
 
     async def _search_chunk(
         self,
@@ -620,7 +658,7 @@ class WmsWaveGenerateAutomation:
                 return int(m.group(1)) if m else None
         return None
 
-    async def _ensure_sort_rules(self, page: Page, label: str) -> None:
+    async def _ensure_sort_rules(self, page: Page, label: str, *, dialog: Locator | None = None) -> None:
         """确保配置框内两条排序规则生效：第一条库位、第二条 SKU*数量。
 
         实测该配置框默认已含两条规则；本方法读取现有标签并仅在缺失/不一致时修正。
@@ -629,9 +667,10 @@ class WmsWaveGenerateAutomation:
         sel = cfg.selectors
         timeouts = cfg.timeouts_ms
         targets = ["库位", "SKU*数量"]
+        scope = dialog if dialog is not None else page
 
         async def _current_labels() -> list[str]:
-            rows = page.locator(sel.sort_rule_rows)
+            rows = scope.locator(sel.sort_rule_rows)
             labels: list[str] = []
             for i in range(await rows.count()):
                 lb = rows.nth(i).locator(sel.sort_rule_label).first
@@ -647,23 +686,25 @@ class WmsWaveGenerateAutomation:
             if current == target:
                 continue
             if idx >= len(labels):
-                add_btn = page.locator(sel.sort_rule_add_btn).first
-                if await add_btn.count() == 0:
-                    raise AutomationError(f"分段 {label}：缺少排序规则且无“添加规则”入口。")
+                add_btn = await self._unique_visible_target(
+                    scope.locator(sel.sort_rule_add_btn), "添加排序规则入口", timeouts.action,
+                )
                 await add_btn.click(timeout=timeouts.action)
                 await page.wait_for_timeout(500)
-            rows = page.locator(sel.sort_rule_rows)
+            rows = scope.locator(sel.sort_rule_rows)
             if await rows.count() <= idx:
                 raise AutomationError(f"分段 {label}：无法添加第 {idx + 1} 条排序规则。")
             await rows.nth(idx).locator(sel.sort_rule_select).first.click(timeout=timeouts.action)
-            # has_text 模糊匹配可能命中多个，取第一个可见
-            visible = page.locator(
-                '.el-select-dropdown .el-select-dropdown__item:visible'
-            ).filter(has_text=target).first
-            if await visible.count() == 0:
-                raise AutomationError(f"分段 {label}：排序规则选项“{target}”不存在。")
+            # 下拉层挂在页面根部；仅接受唯一且全文匹配的可见选项。
+            visible = await self._unique_visible_target(
+                page.locator('.el-select-dropdown .el-select-dropdown__item').filter(
+                    has_text=re.compile(rf"^\s*{re.escape(target)}\s*$"),
+                ), f"排序规则选项“{target}”", timeouts.action,
+            )
             await visible.click(timeout=timeouts.action)
             await page.wait_for_timeout(400)
+        if await _current_labels() != targets:
+            raise AutomationError(f"分段 {label}：排序规则未确认为库位、SKU*数量，未提交生成波次。")
 
     async def _extract_wave_no(self, page: Page, label: str) -> str | None:
         """等待波次生成结果弹窗并提取 W+13 位波次号。"""

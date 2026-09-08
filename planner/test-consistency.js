@@ -262,12 +262,24 @@ function verifyExport(a, selection, label) {
     const base = bi * 5;
     const expected = [];
     let rank = 1;
-    ch.singleSeq.forEach(it => {
-      const segName = ch.singleSegMap.get(it.sku);
-      if (!segName) return;
-      if (!selection.segSelected.has(ch.id + '|' + segName)) return;
-      const seg = ch.segByName.get(segName);
-      expected.push([rank++, it.sku, it.count, normName(segName), seg ? seg.orderCount : '']);
+    // 独立地从原始单品单件记录重算，不复制 singleSeq / singleSegMap 的导出实现。
+    const channelOrders = new Set(ch.segments.flatMap(seg => seg.orderNos));
+    const singlesByOrder = new Map();
+    const frequency = new Map();
+    a.records.forEach(record => {
+      if (record.type !== '单品单件' || !channelOrders.has(record.orderNo)) return;
+      const sku = record.sku1 || '(空SKU)';
+      singlesByOrder.set(record.orderNo, sku);
+      frequency.set(sku, (frequency.get(sku) || 0) + 1);
+    });
+    const skuOrder = Array.from(frequency.keys()).sort((left, right) =>
+      frequency.get(right) - frequency.get(left) || left.localeCompare(right, 'zh'));
+    skuOrder.forEach(sku => {
+      ch.segments.forEach(seg => {
+        if (!selection.segSelected.has(ch.id + '|' + seg.name)) return;
+        const count = seg.orderNos.filter(orderNo => singlesByOrder.get(orderNo) === sku).length;
+        if (count) expected.push([rank++, sku, count, normName(seg.name), seg.orderNos.length]);
+      });
     });
     const got = [];
     for (let r = 2; r < aoa5.length; r++) {
@@ -646,6 +658,77 @@ function recountSegment(a, ch, seg) {
   });
   check(ok, '第4档全量吸收：分段订单数/拣货数量独立重算不一致');
   console.log('✔ 分段订单数与拣货数量独立重算（第 4 档场景）');
+}
+
+/* ---------- 拆分后逐段勾选：固定输入与独立的导出期望 ---------- */
+{
+  const headers = C.mapHeaders([
+    'Outbound Order No/出库单号', 'Type of order variety/订单品种类型',
+    'Shipping Carrier/物流承运商', 'Package 1 Tracking No./物流跟踪号',
+    'SKU 1 SKU', 'SKU 2 SKU', 'Total Qty of SKU/总数量'
+  ]);
+  const singleRows = (sku, count) => Array.from({ length: count }, (_, i) =>
+    [sku + '-' + i, '单品单件', 'CBT', '', sku, '', 1]);
+  const analyzeRows = (rows, params = {}) => {
+    const input = C.buildRecords(rows, headers);
+    return C.analyze(input.records, input.qtyMap, 'normal', () => ({ ...C.DEFAULT_UNIFIED, ...params }));
+  };
+  const sequenceRows = (analysis, names) => {
+    const exported = C.buildExport(analysis, {
+      channelSelected: new Set(['CBT']), segSelected: new Set(names.map(name => 'CBT|' + name))
+    });
+    if (!names.length) {
+      check(exported === null, '全部分段关闭时不应生成导出文件');
+      return [];
+    }
+    return exported.sheets.find(sheet => sheet.name === '单件SKU序列').aoa.slice(2);
+  };
+  [[701, [351, 350]], [800, [400, 400]], [1401, [467, 467, 467]]].forEach(([total, sizes]) => {
+    const analysis = analyzeRows(singleRows('HOT', total));
+    const names = sizes.map((_, i) => '爆品' + (i + 1));
+    sizes.forEach((size, i) => {
+      const got = sequenceRows(analysis, [names[i]]);
+      check(JSON.stringify(got) === JSON.stringify([[1, 'HOT', size, '爆品', size]]),
+        `${total} 单只选第 ${i + 1} 个子段：单件序列应仅有 ${size} 单，实际 ${JSON.stringify(got)}`);
+    });
+    const gotAll = sequenceRows(analysis, names);
+    const expectedAll = sizes.map((size, i) => [i + 1, 'HOT', size, '爆品', size]);
+    check(JSON.stringify(gotAll) === JSON.stringify(expectedAll), `${total} 单全选：单件序列应逐子段输出且不重复累计母段数量`);
+    check(gotAll.reduce((sum, row) => sum + Number(row[2]), 0) === total, `${total} 单全选：单件序列数量应守恒`);
+    check(sequenceRows(analysis, []).length === 0, `${total} 单全部关闭：单件序列应为空`);
+  });
+
+  const multiSku = analyzeRows([...singleRows('A', 400), ...singleRows('B', 400)], { capacity: 800 });
+  const multiSkuSegments = multiSku.channels.find(ch => ch.id === 'CBT').segments;
+  check(multiSkuSegments.length === 1 && multiSkuSegments[0].orderCount === 800, '多 SKU 的 800 单爆品段不应因单 SKU 上限而拆分');
+  check(JSON.stringify(sequenceRows(multiSku, ['爆品1'])) === JSON.stringify([
+    [1, 'A', 400, '爆品', 800], [2, 'B', 400, '爆品', 800]
+  ]), '多 SKU 单件序列应分别统计各 SKU 的 400 单，分段总量保持 800');
+
+  // PAPER 的原始单件、多件、混件共享 SKU。吸收后单件序列仍只能计算原始单件。
+  const mixedRows = [
+    ...singleRows('HOT', 701), ...singleRows('PAPER', 3),
+    ['MULTI', '单品多件', 'CBT', '', 'PAPER', '', 2],
+    ['MIX', '多品混合', 'CBT', '', 'PAPER', 'OTHER', 2]
+  ];
+  [1, 2, 3, 4].forEach(absorb => {
+    const analysis = analyzeRows(mixedRows, { absorb });
+    const ch = analysis.channels.find(channel => channel.id === 'CBT');
+    const paperSeg = ch.segments.find(seg => seg.orderNos.includes('PAPER-0'));
+    const expectedKind = absorb === 4 ? '混件' : '单件paper';
+    const expectedOrders = absorb === 4 ? 5 : 3;
+    const got = sequenceRows(analysis, [paperSeg.name]);
+    check(JSON.stringify(got) === JSON.stringify([[1, 'PAPER', 3, expectedKind, expectedOrders]]),
+      `吸收 ${absorb}：只选 PAPER 所在段时单件序列必须排除同 SKU 原始多件、混件，实际 ${JSON.stringify(got)}`);
+    const all = sequenceRows(analysis, ch.segments.map(seg => seg.name));
+    check(JSON.stringify(all) === JSON.stringify([
+      [1, 'HOT', 351, '爆品', 351], [2, 'HOT', 350, '爆品', 350],
+      [3, 'PAPER', 3, expectedKind, expectedOrders]
+    ]), `吸收 ${absorb}：全选须同时保持拆分 SKU 和原始单件口径`);
+    check(ch.segments.reduce((sum, seg) => sum + seg.orderCount, 0) === 706, `吸收 ${absorb}：订单总量应为 706`);
+    check(ch.segments.reduce((sum, seg) => sum + seg.pickQty, 0) === 708, `吸收 ${absorb}：拣货总件数应为 708`);
+  });
+  console.log('✔ 单 SKU 701/800/1401 逐段/全选/全关导出，以及多 SKU 和四档吸收回归');
 }
 
 console.log(failures === 0 ? '\n全部一致性测试通过 ✅' : `\n共 ${failures} 处不一致 ✘`);

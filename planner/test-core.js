@@ -229,10 +229,14 @@ assert(exportData.sheets.map(s => s.name).join(',') ===
   '分组结果,分组结果SKU池,波次表,渠道统计,客户统计,单件SKU序列,多件SKU序列,混件SKU序列,分类SKU序列',
   '工作表顺序不符');
 console.log('工作表顺序:', exportData.sheets.map(s => s.name).join(' → '));
-assert(exportData.filename === '波次规划' + new Date().toISOString().slice(0, 10).replace(/-/g, '') + '.xlsx', '文件名格式');
-const outPath = path.join(__dirname, 'tmp', 'test-export.xlsx');
-fs.writeFileSync(outPath, Buffer.from(C.buildXlsxBuffer(exportData.sheets)));
-console.log('✔ 导出工作簿已生成: ' + outPath + '（' + exportData.filename + '）');
+const exportDate = new Date();
+const localYmd = String(exportDate.getFullYear()) + String(exportDate.getMonth() + 1).padStart(2, '0') + String(exportDate.getDate()).padStart(2, '0');
+assert(exportData.filename === '波次规划' + localYmd + '.xlsx', '文件名应使用本地日期');
+const exportBuffer = Buffer.from(C.buildXlsxBuffer(exportData.sheets));
+const roundtripWorkbook = XLSX.read(exportBuffer, { type: 'buffer' });
+assert(roundtripWorkbook.SheetNames.join(',') === exportData.sheets.map(s => s.name).join(','),
+  'XLSX 内存读回后的工作表名称和顺序必须一致');
+console.log('✔ 导出工作簿已在内存中生成并读回（' + exportData.filename + '）');
 
 /* 导出过滤 */
 const filtered = C.buildExport(a, { channelSelected: new Set(['CBT']), segSelected: new Set([...exportState.segSelected].filter(k => k.startsWith('CBT|爆品'))) });
@@ -326,6 +330,30 @@ console.log('✔ 三层导出过滤行为正确');
   assert(recs.records.length === 1 && recs.records[0].orderNo === '第2行', '空出库单号应使用第N行占位');
   console.log('✔ 空出库单号占位（第N行）');
 
+  /* 订单号可能与 Object 的继承属性重名，仍须按普通订单读取首次数量。 */
+  const specialOrders = ['NORMAL', 'constructor', 'toString', '__proto__', 'hasOwnProperty'];
+  const specialRows = specialOrders.flatMap((orderNo, i) => [
+    [orderNo, 'CBT', '多品混合', '', 'SKU-A', i + 3],
+    [orderNo, 'CBT', '多品混合', '', 'SKU-B', 99]
+  ]);
+  const special = C.buildRecords(specialRows, {
+    map: { 'outboundorderno/出库单号': 0, 'shippingcarrier/物流承运商': 1, 'typeofordervariety/订单品种类型': 2, 'package1trackingno./物流跟踪号': 3, 'sku1sku': 4, 'totalqtyofsku/总数量': 5 },
+    skuIdx: [{ n: 1, ci: 4 }]
+  });
+  assert(special.records.length === 5 && Object.keys(special.qtyMap).length === 5,
+    '特殊订单号与普通订单号均应合并重复行，数量字典应有 5 条记录');
+  specialOrders.forEach((orderNo, i) => {
+    assert(Object.prototype.hasOwnProperty.call(special.qtyMap, orderNo), orderNo + ' 应有独立的数量记录');
+    assert(special.qtyMap[orderNo] === i + 3, orderNo + ' 应保留首次总数量，不能读取继承属性或累加重复行');
+    const record = special.records.find(r => r.orderNo === orderNo);
+    assert(record.qty === i + 3 && record.skus.join(',') === 'SKU-A,SKU-B', orderNo + ' 合并后数量及 SKU 不符');
+  });
+  const specialAnalysis = C.analyze(special.records, special.qtyMap, 'normal', () => ({ ...C.DEFAULT_UNIFIED }));
+  const specialSegments = specialAnalysis.channels.find(ch => ch.id === 'CBT').segments;
+  assert(specialSegments.reduce((sum, seg) => sum + seg.orderCount, 0) === 5, '特殊订单号不能增加或丢失订单');
+  assert(specialSegments.reduce((sum, seg) => sum + seg.pickQty, 0) === 25, '特殊订单号的拣货总件数应为 3+4+5+6+7=25');
+  console.log('✔ 特殊订单号及重复行合并：首次数量、SKU 并集与拣货合计');
+
   /* 大类归并解析器（函数参数） */
   const am2 = C.analyze(records, qtyMap, 'merged', (id) => ({ hotLine: 7, capacity: 300, multiSegs: 2, mixSegs: 3, absorb: 2 }));
   assert(am2.channels.every(c => c.params.hotLine === 7 && c.params.capacity === 300), '解析器参数应生效');
@@ -341,6 +369,23 @@ console.log('✔ 三层导出过滤行为正确');
   const flat = segs => segs.flatMap(s => s.orderNos);
   const qm = {};
   for (let i = 0; i < 1600; i++) qm['O' + i] = 1;
+
+  // 独立边界期望：子段 SKU 池必须统计该子段订单，不能复用母段总数。
+  [[701, [351, 350]], [800, [400, 400]], [1401, [467, 467, 467]]].forEach(([total, sizes]) => {
+    const original = mkHot(total, 1);
+    const children = C.splitOversizedHotSegments([original], qm);
+    assert(children.length === sizes.length, total + ' 单的拆分段数不符');
+    let offset = 0;
+    children.forEach((seg, i) => {
+      const expectedOrders = Array.from({ length: sizes[i] }, (_, index) => 'O' + (offset + index));
+      assert(JSON.stringify(seg.orderNos) === JSON.stringify(expectedOrders), total + ' 单的第 ' + (i + 1) + ' 段订单顺序/边界不符');
+      assert(seg.orderCount === sizes[i] && seg.pickQty === sizes[i], total + ' 单的子段订单/拣货统计不符');
+      assert(JSON.stringify(seg.skuPool) === JSON.stringify([{ sku: 'SKU0', count: sizes[i] }]),
+        total + ' 单的第 ' + (i + 1) + ' 段 SKU 池应为 ' + sizes[i] + ' 单');
+      offset += sizes[i];
+    });
+    assert(original.skuPool[0].count === total, '拆分不能修改输入母段的 SKU 池');
+  });
 
   // 800 单 单SKU → 2 段（400/400），每段 ≤700
   let hs = C.splitOversizedHotSegments([mkHot(800, 1)], qm);
@@ -366,12 +411,14 @@ console.log('✔ 三层导出过滤行为正确');
   const multi = mkHot(800, 2);
   hs = C.splitOversizedHotSegments([multi], qm);
   assert(hs.length === 1 && hs[0].orderCount === 800 && hs[0].skuCount === 2, '多SKU爆品段不应拆');
+  assert(JSON.stringify(hs[0].skuPool) === JSON.stringify([{ sku: 'SKU0', count: 400 }, { sku: 'SKU1', count: 400 }]),
+    '多 SKU 爆品段须保留各自 400 单，不能把整段 800 单赋给每个 SKU');
 
   // 混合序列重编号连续：600 / 800 / 500 → 爆品1(600), 爆品2(400), 爆品3(400), 爆品4(500)
   hs = C.splitOversizedHotSegments([mkHot(600, 1), mkHot(800, 1), mkHot(500, 1)], qm);
   assert(names(hs) === '爆品1(600),爆品2(400),爆品3(400),爆品4(500)', '混合序列编号应连续: ' + names(hs));
   assert(hs.every(s => s.orderCount <= 700), '拆分后每段都应 ≤700');
-  console.log('✔ 爆品单SKU超700拆分（600/700/800/1401/1500/多SKU/混合编号）');
+  console.log('✔ 爆品单SKU超700拆分（600/700/701/800/1401/1500/子段SKU池/多SKU/混合编号）');
 })();
 
 console.log('\n全部核心测试通过 ✅');

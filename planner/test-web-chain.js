@@ -5,8 +5,6 @@ const path = require('path');
 const T = require('./test-helpers.js');
 
 const P = T.paths(__dirname);
-const PORT = 9391;
-const USER_DIR = P.tmp('chrome-chain');
 const DL_DIR = P.tmp('chain-download');
 const HTML = P.html;
 const SAMPLE = P.sample;
@@ -25,10 +23,8 @@ function deepEqual(a, b) {
 }
 
 
-const chrome = T.launchChrome({ port: PORT, userDataDir: USER_DIR });
-
-(async () => {
-  const ws = await T.connectCdp({ port: PORT });
+T.withChrome({}, async chrome => {
+  const ws = await T.connectCdp({ chrome });
   const drv = T.createDriver(ws);
   const { send, evalJs, poll } = drv;
   await drv.enablePage();
@@ -110,12 +106,12 @@ const chrome = T.launchChrome({ port: PORT, userDataDir: USER_DIR });
     var data = window.__dshTest.buildExportNow();
     return JSON.stringify(data.sheets.map(function(s){ return {name: s.name, aoa: s.aoa}; }));
   })()`);
-  fs.writeFileSync(path.join(__dirname, 'tmp', 'expected-export.json'), expectedJson);
+  fs.writeFileSync(P.tmp('expected-export.json'), expectedJson);
   const expected = JSON.parse(expectedJson);
   console.log('✔ 捕获内部预期导出数据：' + expected.map(s => s.name).join(' / '));
 
   /* 5. 点击导出并等待下载 */
-  fs.rmSync(DL_DIR, { recursive: true, force: true });
+  T.rmDir(DL_DIR);
   fs.mkdirSync(DL_DIR, { recursive: true });
   await evalJs(`document.getElementById('btnExport').click()`);
   let downloaded = null;
@@ -125,7 +121,7 @@ const chrome = T.launchChrome({ port: PORT, userDataDir: USER_DIR });
     await sleep(200);
   }
   assert(downloaded, '导出文件未下载');
-  fs.copyFileSync(downloaded, path.join(__dirname, 'tmp', 'web-chain-export.xlsx'));
+  fs.copyFileSync(downloaded, P.tmp('web-chain-export.xlsx'));
   console.log('✔ 下载: ' + path.basename(downloaded));
 
   /* 6. 回读下载文件并与内部预期逐格比对 */
@@ -164,10 +160,4 @@ const chrome = T.launchChrome({ port: PORT, userDataDir: USER_DIR });
   console.log('✔ 波次表自动筛选: ' + ws3['!autofilter'].ref);
 
   console.log('\n浏览器链路一致性测试全部通过 ✅');
-  chrome.kill();
-  process.exit(0);
-})().catch(e => {
-  console.error('✘ 测试失败:', e.message);
-  try { chrome.kill(); } catch (err) { }
-  process.exit(1);
 });

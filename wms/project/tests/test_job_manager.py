@@ -71,9 +71,9 @@ class FakeWavePrintAutomation:
 
 
 @pytest.mark.asyncio
-async def test_job_reaches_success() -> None:
+async def test_job_reaches_success(isolated_runtime) -> None:
     fake = FakeAutomation()
-    manager = JobManager(fake)
+    manager = JobManager(fake, settings=isolated_runtime)
     job = manager.create("export", "headless")
 
     await asyncio.wait_for(manager.tasks[job.id], timeout=1)
@@ -87,10 +87,10 @@ async def test_job_reaches_success() -> None:
 
 
 @pytest.mark.asyncio
-async def test_all_wave_job_reaches_success() -> None:
+async def test_all_wave_job_reaches_success(isolated_runtime) -> None:
     fake_export = FakeAutomation()
     fake_wave = FakeWaveAutomation()
-    manager = JobManager(fake_export, fake_wave)
+    manager = JobManager(fake_export, fake_wave, settings=isolated_runtime)
     job = manager.create("pick_waves", "headed")
 
     await asyncio.wait_for(manager.tasks[job.id], timeout=1)
@@ -105,9 +105,9 @@ async def test_all_wave_job_reaches_success() -> None:
 
 
 @pytest.mark.asyncio
-async def test_selected_wave_pick_job_forwards_wave_numbers() -> None:
+async def test_selected_wave_pick_job_forwards_wave_numbers(isolated_runtime) -> None:
     fake_wave = FakeWaveAutomation()
-    manager = JobManager(FakeAutomation(), fake_wave)
+    manager = JobManager(FakeAutomation(), fake_wave, settings=isolated_runtime)
     job = manager.create(
         "pick_waves",
         "headless",
@@ -124,7 +124,7 @@ async def test_selected_wave_pick_job_forwards_wave_numbers() -> None:
 
 
 @pytest.mark.asyncio
-async def test_wave_job_reports_partial_completion() -> None:
+async def test_wave_job_reports_partial_completion(isolated_runtime) -> None:
     fake_export = FakeAutomation()
     fake_wave = FakeWaveAutomation()
     fake_wave.run = AsyncMock(return_value=WavePickResult(
@@ -138,7 +138,7 @@ async def test_wave_job_reports_partial_completion() -> None:
         message="最终统一检查确认完成 2 个；WTEST002 仍在待拣货列表",
         completed_at=datetime.now().astimezone().isoformat(),
     ))
-    manager = JobManager(fake_export, fake_wave)
+    manager = JobManager(fake_export, fake_wave, settings=isolated_runtime)
     job = manager.create("pick_waves", "headed")
 
     await asyncio.wait_for(manager.tasks[job.id], timeout=1)
@@ -148,12 +148,13 @@ async def test_wave_job_reports_partial_completion() -> None:
     assert saved.status == "partial"
     assert saved.result["failed_wave_nos"] == ["WTEST002"]
     assert saved.events[-1].stage == "completed_with_warnings"
+    assert manager.tasks == {}
 
 
 @pytest.mark.asyncio
-async def test_selected_wave_print_job_reaches_success() -> None:
+async def test_selected_wave_print_job_reaches_success(isolated_runtime) -> None:
     fake_print = FakeWavePrintAutomation()
-    manager = JobManager(FakeAutomation(), FakeWaveAutomation(), fake_print)
+    manager = JobManager(FakeAutomation(), FakeWaveAutomation(), fake_print, settings=isolated_runtime)
     job = manager.create(
         "print_waves",
         "headless",
@@ -170,8 +171,8 @@ async def test_selected_wave_print_job_reaches_success() -> None:
 
 
 @pytest.mark.asyncio
-async def test_second_active_job_is_rejected() -> None:
-    manager = JobManager(BlockingAutomation())
+async def test_second_active_job_is_rejected(isolated_runtime) -> None:
+    manager = JobManager(BlockingAutomation(), settings=isolated_runtime)
     first = manager.create("export", "headed")
     await asyncio.sleep(0)
 
@@ -182,8 +183,8 @@ async def test_second_active_job_is_rejected() -> None:
 
 
 @pytest.mark.asyncio
-async def test_immediate_cancel_releases_active_job() -> None:
-    manager = JobManager(BlockingAutomation())
+async def test_immediate_cancel_releases_active_job(isolated_runtime) -> None:
+    manager = JobManager(BlockingAutomation(), settings=isolated_runtime)
     first = manager.create("export", "headed")
 
     cancelled = await manager.cancel(first.id)

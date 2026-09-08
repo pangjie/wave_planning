@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from pathlib import Path
 import re
 import shutil
 import sqlite3
+import sys
 
 from playwright.async_api import (
     BrowserContext,
@@ -21,6 +24,30 @@ from app.core.config import Settings
 
 
 ProgressCallback = Callable[[str, str], Awaitable[None]]
+_cleanup_warnings: ContextVar[list[str] | None] = ContextVar("wms_cleanup_warnings", default=None)
+logger = logging.getLogger(__name__)
+
+
+def record_cleanup_warning(label: str, exc: Exception, warnings: list[str] | None = None) -> None:
+    """Report housekeeping faults separately from confirmed business outcomes."""
+    message = f"{label}失败：{exc}。已确认的业务结果保留，不会因此重新执行。"
+    collector = warnings if warnings is not None else _cleanup_warnings.get()
+    if collector is not None:
+        collector.append(message)
+    logger.warning(message, exc_info=True)
+
+
+async def run_cleanup(
+    action: Callable[[], Awaitable[object]], label: str, warnings: list[str] | None = None,
+) -> bool:
+    try:
+        await action()
+        return True
+    except Exception as exc:
+        # Cancellation remains cancellation; only ordinary housekeeping errors
+        # become warnings. Never call a fallible progress callback in cleanup.
+        record_cleanup_warning(label, exc, warnings)
+        return False
 
 
 # 波次号白名单：仅字母、数字、下划线、连字符（防路径注入与歧义匹配）
@@ -132,6 +159,7 @@ async def open_browser_context(
     *,
     headless: bool,
     downloads_dir: Path | None = None,
+    cleanup_warnings: list[str] | None = None,
 ) -> AsyncIterator[BrowserContext]:
     """Open and reliably close the shared persistent WMS browser profile."""
     settings.browser_profile_dir.mkdir(parents=True, exist_ok=True)
@@ -149,18 +177,21 @@ async def open_browser_context(
             downloads_path=str(downloads_dir),
         )
 
-    async with async_playwright() as playwright:
-        context = await playwright.chromium.launch_persistent_context(**launch_options)
+    collector = cleanup_warnings if cleanup_warnings is not None else []
+    token = _cleanup_warnings.set(collector)
+    try:
+        playwright_manager = async_playwright()
+        playwright = await playwright_manager.__aenter__()
         try:
-            yield context
-        except BaseException:
-            # 业务异常路径：close() 失败（如页面/浏览器已断开，报
-            # "Target page, context or browser has been closed"）绝不能覆盖
-            # 原始异常——否则日志只看到清理错误，第一现场被吞掉。
+            context = await playwright.chromium.launch_persistent_context(**launch_options)
             try:
-                await context.close()
-            except Exception:
-                pass
-            raise
-        else:
-            await context.close()
+                yield context
+            finally:
+                await run_cleanup(context.close, "关闭专用浏览器")
+        finally:
+            exit_info = sys.exc_info()
+            await run_cleanup(
+                lambda: playwright_manager.__aexit__(*exit_info), "关闭浏览器驱动",
+            )
+    finally:
+        _cleanup_warnings.reset(token)

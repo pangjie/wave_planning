@@ -1,27 +1,38 @@
-/* WMS 联动 UI 端到端测试：本地模拟 8000 API 服务 + Chrome */
+/* WMS 联动 UI 端到端测试：随机回环端口模拟服务 + 隔离 Chrome，禁止真实 WMS。 */
 'use strict';
 const path = require('path');
 const T = require('./test-helpers.js');
 const { createMockServer } = require('./mock-wms-server.js');
 
 const P = T.paths(__dirname);
-const PORT = 9334;
-const USER_DIR = P.tmp('chrome-wms');
-const SITE = 'http://127.0.0.1:8000';
 const HTML_SOURCE = path.join(__dirname, '..', 'wms', 'project', 'frontend', 'dist', 'index.html');
 const SAMPLE = P.sample;
 const { sleep, assert } = T;
 
 const mock = createMockServer({ samplePath: SAMPLE, htmlSource: HTML_SOURCE });
 
-T.withChrome(T.launchChrome({ port: PORT, userDataDir: USER_DIR }), async () => {
-  await mock.listen(8000, '127.0.0.1');
-
-  const ws = await T.connectCdp({ port: PORT });
+(async () => {
+  const SITE = await mock.listen();
+  await T.withChrome({ allowedOrigins: [SITE] }, async chrome => {
+  const ws = await T.connectCdp({ chrome });
   const drv = T.createDriver(ws, { pollTries: 120 });
   const { send, evalJs, poll } = drv;
   await drv.enablePage();
-  const shot = name => T.captureShot(send, name, path.join(__dirname, 'shots'));
+  const shot = name => T.captureShot(send, name, P.tmp('shots'));
+  const buttons = { export: 'wmsExport', generate_waves: 'wmsGenerate', print_waves: 'wmsPrint', pick_waves: 'wmsPick' };
+  const jobStatus = id => `(function(){var j=window.__dshTest.wms.job;return j && j.id === ${JSON.stringify(id)} ? j.status : '';})()`;
+  async function startJob(mode) {
+    const oldIds = [...mock.jobs.keys()];
+    await evalJs(`(function(){
+      if (window.__dshTest.wms.mode !== ${JSON.stringify(mode)}) document.getElementById(${JSON.stringify(buttons[mode])}).click();
+      document.getElementById('wmsRun').click();
+    })()`);
+    await poll(`(function(){var j=window.__dshTest.wms.job;return !!(j && j.mode === ${JSON.stringify(mode)} && !${JSON.stringify(oldIds)}.includes(j.id));})()`, true);
+    const id = await evalJs(`window.__dshTest.wms.job.id`);
+    assert(mock.jobs.has(id) && !oldIds.includes(id), '必须锁定本次模拟服务新建的 job ID');
+    assert(await evalJs(jobStatus('not-this-job')) === '', '其他任务的终态不得满足本次等待');
+    return id;
+  }
   await send('Emulation.setDeviceMetricsOverride', { width: 1920, height: 950, deviceScaleFactor: 1, mobile: false });
   await send('Page.navigate', { url: SITE + '/' });
   await poll(`document.readyState`, 'complete');
@@ -59,8 +70,8 @@ T.withChrome(T.launchChrome({ port: PORT, userDataDir: USER_DIR }), async () => 
   })()`);
   const sl = JSON.parse(selInfo);
   assert(sl.sel === true && sl.runOn === true && sl.runText === '开始任务', '选中全量分析后应反白且开始任务可用: ' + selInfo);
-  await evalJs(`document.getElementById('wmsRun').click()`);
-  await poll(`(function(){var w=window.__dshTest.wms;return w.job && w.job.mode==='export' ? w.job.status : '';})()`, 'succeeded', 100, 200);
+  const exportJobId = await startJob('export');
+  await poll(jobStatus(exportJobId), 'succeeded', 100, 200);
   await poll(`window.__dshTest.state.records.length`, 5700);
   const exp = await evalJs(`(function(){
     return JSON.stringify({
@@ -73,7 +84,7 @@ T.withChrome(T.launchChrome({ port: PORT, userDataDir: USER_DIR }), async () => 
   const ex = JSON.parse(exp);
   assert(ex.log.indexOf('已导入 ParcelOutbound_mock.xlsx（5700 单）') !== -1, '导出后应自动导入文件并记入日志: ' + exp);
   assert(ex.stateTxt === '已完成' && ex.rows === 12 && ex.busyOff === true, '导出完成后状态错误: ' + exp);
-  const reqs = JSON.parse(await (await fetch('http://127.0.0.1:8000/api/__test/requests')).text());
+  const reqs = JSON.parse(await (await fetch(SITE + '/api/__test/requests')).text());
   assert(reqs[0].mode === 'export' && reqs[0].confirm_production === true && reqs[0].wave_nos === undefined, '导出请求体错误: ' + JSON.stringify(reqs[0]));
   assert(reqs[0].browser_mode === 'headless', '默认应为无头模式: ' + JSON.stringify(reqs[0]));
   const bm = await evalJs(`(function(){
@@ -98,11 +109,19 @@ T.withChrome(T.launchChrome({ port: PORT, userDataDir: USER_DIR }), async () => 
   await shot('wms-2-exported');
   console.log('✔ 导出订单：任务完成 → 自动导入 5700 单并重建表格；请求含 confirm_production');
 
-  /* 2.4 波次记录同步：后端已有波次号的分段自动变绿并导出；波次号变化时更新 */
-  await fetch('http://127.0.0.1:8000/api/__test/wave-records', {
+  async function scopedRecord(channel, waveNo) {
+    return JSON.parse(await evalJs(`(function(){
+      var t = window.__dshTest;
+      var seg = t.curAnalysis().channels.find(c => c.id === ${JSON.stringify(channel)}).segments.find(s => s.name === '爆品1');
+      return JSON.stringify({ channel: ${JSON.stringify(channel)}, seg_name: seg.name, wave_no: ${JSON.stringify(waveNo)},
+        batch_id: t.state.batchId, plan_id: t.state.planId, order_nos: seg.orderNos.slice(), order_count: seg.orderCount });
+    })()`));
+  }
+  /* 2.4 历史必须匹配计划身份及原订单集合，不能仅凭渠道/段名回填。 */
+  await fetch(SITE + '/api/__test/wave-records', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ records: [{ channel: 'SwiftX', seg_name: '爆品1', wave_no: 'W0092608180011', order_count: 10 }] })
+    body: JSON.stringify({ records: [await scopedRecord('SwiftX', 'W0092608180011')] })
   });
   await evalJs(`window.__dshTest.wmsSyncWaveRecords()`);
   await poll(`document.querySelectorAll('#dash .seg-line.waved').length`, 1, 100, 50);
@@ -120,12 +139,12 @@ T.withChrome(T.launchChrome({ port: PORT, userDataDir: USER_DIR }), async () => 
   await shot('wms-2-4-records-sync');
 
   /* 2.45 定时器路径：新增记录由 5 秒定时器自动同步变绿；同分段新波次号覆盖更新 */
-  await fetch('http://127.0.0.1:8000/api/__test/wave-records', {
+  await fetch(SITE + '/api/__test/wave-records', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ records: [
-      { channel: 'SwiftX', seg_name: '爆品1', wave_no: 'W0092608180099', order_count: 10 },
-      { channel: 'USPS', seg_name: '爆品1', wave_no: 'W0092608180088', order_count: 11 }
+      await scopedRecord('SwiftX', 'W0092608180099'),
+      await scopedRecord('USPS', 'W0092608180088')
     ] })
   });
   await sleep(6500);  // 等 5 秒定时器自动同步（不手动调用钩子）
@@ -142,7 +161,7 @@ T.withChrome(T.launchChrome({ port: PORT, userDataDir: USER_DIR }), async () => 
   assert(ti.usps === 'W0092608180088', '新增分段波次号应回填: ' + timerInfo);
   console.log('✔ 波次记录定时同步：5 秒自动应用、新波次号覆盖旧值');
 
-  /* 2.46 否掉渠道后：其分段即使有波次号也不显示绿色；重新勾选恢复 */
+  /* 2.46 选择改变产生新计划，不把旧计划波次号重新套到新计划。 */
   await evalJs(`document.querySelector('.chn[data-ch="SwiftX"]').click()`);
   await sleep(200);
   const offInfo = await evalJs(`(function(){
@@ -154,21 +173,21 @@ T.withChrome(T.launchChrome({ port: PORT, userDataDir: USER_DIR }), async () => 
   })()`);
   const oi = JSON.parse(offInfo);
   assert(oi.swiftxWaved === false, '否掉渠道后其分段不应显示绿色: ' + offInfo);
-  assert(oi.uspsWaved === true, '其他有效分段应保持绿色: ' + offInfo);
-  assert(oi.waveNoKept === 'W0092608180099', '波次号数据保留（重新勾选后恢复绿色）: ' + offInfo);
+  assert(oi.uspsWaved === false, '新计划不继承旧计划完成标记: ' + offInfo);
+  assert(oi.waveNoKept === '', '旧计划波次号不留在新计划中: ' + offInfo);
   await evalJs(`document.querySelector('.chn[data-ch="SwiftX"]').click()`);
   await sleep(200);
   const onAgain = await evalJs(`document.querySelector('.seg-line[data-seg="SwiftX|爆品1"]').classList.contains('waved')`);
-  assert(onAgain === true, '重新勾选渠道后应恢复绿色: ' + onAgain);
+  assert(onAgain === false, '重新勾选不能猜测恢复旧计划波次号: ' + onAgain);
   await shot('wms-2-46-off-channel');
-  console.log('✔ 否掉渠道：分段不再显示绿色；重新勾选后恢复（波次号数据保留）');
+  console.log('✔ 改变渠道选择产生新计划，不沿用旧计划完成标记');
 
   /* 2.5 生成波次：分段按导出顺序提交（不跳过已完成分段，重新生成由用户勾选决定） */
-  await evalJs(`(function(){document.getElementById('wmsGenerate').click();document.getElementById('wmsRun').click();return 1;})()`);
+  const generateJobId = await startJob('generate_waves');
   /* 逐段变绿：任务仍在运行时，已生成的分段即变绿（而非全部完成后才变绿） */
   await poll(`(function(){
     var w = window.__dshTest.wms;
-    return w.job && w.job.mode === 'generate_waves' && w.job.status === 'running'
+    return w.job && w.job.id === ${JSON.stringify(generateJobId)} && w.job.status === 'running'
       && document.querySelectorAll('#dash .seg-line.waved').length >= 5;
   })()`, true, 100, 200);
   const midInfo = await evalJs(`(function(){
@@ -180,9 +199,9 @@ T.withChrome(T.launchChrome({ port: PORT, userDataDir: USER_DIR }), async () => 
   const mi = JSON.parse(midInfo);
   assert(mi.status === 'running' && mi.waved >= 5, '任务运行中已生成的分段应逐段变绿: ' + midInfo);
   console.log('✔ 逐段变绿：任务运行中（' + mi.waved + ' 段已绿）即回填波次号');
-  await poll(`(function(){var w=window.__dshTest.wms;return w.job && w.job.mode==='generate_waves' ? w.job.status : '';})()`, 'succeeded', 100, 300);
+  await poll(jobStatus(generateJobId), 'succeeded', 100, 300);
   await poll(`document.querySelector('#wmsLog a[href*="/api/exports/"]') ? true : false`, true, 100, 100);
-  const gen = JSON.parse(await (await fetch('http://127.0.0.1:8000/api/__test/requests')).text())
+  const gen = JSON.parse(await (await fetch(SITE + '/api/__test/requests')).text())
     .filter(r => r.mode === 'generate_waves').pop();
   assert(gen && Array.isArray(gen.segments) && gen.segments.length > 0, '生成波次请求应含分段清单: ' + JSON.stringify(gen));
   assert(gen.segments.some(function (sg) { return sg.channel + '|' + sg.seg_name === 'SwiftX|爆品1'; }), '提交不应因已有波次号而跳过已完成分段: ' + JSON.stringify(gen.segments));
@@ -198,7 +217,7 @@ T.withChrome(T.launchChrome({ port: PORT, userDataDir: USER_DIR }), async () => 
   const linkCount = await evalJs(`document.querySelectorAll('#wmsLog a[href*="/api/exports/"]').length`);
   assert(linkCount === 1, '日志中波次规划下载链接应恰好一条: ' + linkCount);
   /* 刷新场景：清空日志 + 重置去重集合 + 恢复流程 → 当天日志与可下载链接完整重建 */
-  const exportList = JSON.parse(await (await fetch('http://127.0.0.1:8000/api/exports')).text());
+  const exportList = JSON.parse(await (await fetch(SITE + '/api/exports')).text());
   assert(Array.isArray(exportList) && exportList.length >= 1, '后端应提供当天导出清单: ' + JSON.stringify(exportList));
   await evalJs(`(function(){
     document.getElementById('wmsLog').innerHTML = '';
@@ -224,18 +243,13 @@ T.withChrome(T.launchChrome({ port: PORT, userDataDir: USER_DIR }), async () => 
   await evalJs(T.importFileExpr(SAMPLE));  // 重新导入：清空既往波次状态，从干净状态开始
   await poll(`window.__dshTest.state.records.length`, 5700, 100, 200);
   await sleep(600);  // 等清理请求落库
-  await fetch('http://127.0.0.1:8000/api/__test/fail-segment', {
+  await fetch(SITE + '/api/__test/fail-segment', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ channel: failTarget.channel, seg_name: failTarget.seg_name })
   });
-  await evalJs(`(function(){
-    var w = window.__dshTest.wms;
-    w.job = null;
-    if (w.mode !== 'generate_waves') document.getElementById('wmsGenerate').click();
-    document.getElementById('wmsRun').click();
-    return 1;
-  })()`);
-  await poll(`(function(){var w=window.__dshTest.wms;return w.job && w.job.mode==='generate_waves' ? w.job.status : '';})()`, 'partial', 100, 300);
+  const partialJobId = await startJob('generate_waves');
+  assert(partialJobId !== generateJobId, '相同模式必须等待新任务，而非上次已完成的任务');
+  await poll(jobStatus(partialJobId), 'partial', 100, 300);
   await poll(`document.querySelector('#wmsLog a[href*="/api/exports/"]') ? true : false`, true, 100, 100);
   const partInfo = JSON.parse(await evalJs(`(function(){
     var seg = document.querySelector('.seg-line[data-seg="${failTarget.channel}|${failTarget.seg_name}"]');
@@ -250,13 +264,13 @@ T.withChrome(T.launchChrome({ port: PORT, userDataDir: USER_DIR }), async () => 
   assert(partInfo.failedWaved === false, '失败分段不应变绿: ' + JSON.stringify(partInfo));
   assert(partInfo.waved > 0 && partInfo.failedLogged === true, '其余分段应继续生成且日志含失败记录: ' + JSON.stringify(partInfo));
   assert(partInfo.linkCount === 1, 'partial 完成后也应自动导出一次: ' + JSON.stringify(partInfo));
-  await fetch('http://127.0.0.1:8000/api/__test/fail-segment', {
+  await fetch(SITE + '/api/__test/fail-segment', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ channel: null, seg_name: null })
   });
   console.log('✔ 分段失败安全停止：失败段不变绿、其余继续、整体 partial、自动导出仍执行');
 
-  /* 2.6 重新导入订单文件：既往波次历史应被清理（本地变绿清零 + 后端记录清空） */
+  /* 2.6 重新导入订单文件：本地标记清零，新批次无历史，旧批次记录保留。 */
   await evalJs(T.importFileExpr(SAMPLE));
   await poll(`window.__dshTest.state.records.length`, 5700, 100, 200);
   await sleep(600);  // 等清理请求落库
@@ -269,9 +283,12 @@ T.withChrome(T.launchChrome({ port: PORT, userDataDir: USER_DIR }), async () => 
   })()`);
   const ri = JSON.parse(reInfo);
   assert(ri.waveNos === 0 && ri.waved === 0, '重新导入后分段不应再变绿: ' + reInfo);
-  const recsAfter = JSON.parse(await (await fetch('http://127.0.0.1:8000/api/wave-records')).text());
-  assert(recsAfter.length === 0, '重新导入后后端波次记录应被清空');
-  console.log('✔ 重新导入订单文件：本地波次状态与后端历史一并清理，分段不再显示为已完成');
+  const recsAfter = JSON.parse(await (await fetch(SITE + '/api/wave-records')).text());
+  const identity = JSON.parse(await evalJs(`JSON.stringify({ batch: window.__dshTest.state.batchId, plan: window.__dshTest.state.planId })`));
+  const currentRecords = await (await fetch(SITE + '/api/wave-records?batch_id=' + identity.batch + '&plan_id=' + identity.plan)).json();
+  assert(currentRecords.length === 0, '重新导入后的新计划不应拥有旧历史');
+  assert(recsAfter.length > 0, '新批次不能删除旧批次记录');
+  console.log('✔ 重新导入后本地状态清零，历史按批次隔离且保留旧批次');
 
   /* 3. 打印波次：非法波次号被拦截，合法提交后完成 */
   await evalJs(`(function(){
@@ -292,11 +309,11 @@ T.withChrome(T.launchChrome({ port: PORT, userDataDir: USER_DIR }), async () => 
   await evalJs(`(function(){
     var t = document.getElementById('wmsWaves');
     t.value = 'W001\\nW002\\nW001';
-    document.getElementById('wmsRun').click();
     return 1;
   })()`);
-  await poll(`(function(){var w=window.__dshTest.wms;return w.job && w.job.mode==='print_waves' ? w.job.status : '';})()`, 'succeeded', 100, 200);
-  const pr = JSON.parse(await (await fetch('http://127.0.0.1:8000/api/__test/requests')).text());
+  const printJobId = await startJob('print_waves');
+  await poll(jobStatus(printJobId), 'succeeded', 100, 200);
+  const pr = JSON.parse(await (await fetch(SITE + '/api/__test/requests')).text());
   const printReq = pr.filter(r => r.mode === 'print_waves').pop();
   assert(printReq && JSON.stringify(printReq.wave_nos) === JSON.stringify(['W001', 'W002']), '打印请求波次号应去重: ' + JSON.stringify(printReq));
   const pmsg = await evalJs(`document.getElementById('wmsMsg').textContent`);
@@ -314,8 +331,9 @@ T.withChrome(T.launchChrome({ port: PORT, userDataDir: USER_DIR }), async () => 
   console.log('✔ 打印波次：非法号拦截、去重提交、合并完成，日志含合并文档下载链接');
 
   /* 4. 拣货运行中：409 拦截 + 取消 */
-  await evalJs(`(function(){document.getElementById('wmsWaves').value='';document.getElementById('wmsPick').click();document.getElementById('wmsRun').click();return 1;})()`);
-  await poll(`(function(){var w=window.__dshTest.wms;return w.job && w.job.mode==='pick_waves' ? w.job.status : '';})()`, 'running', 100, 200);
+  await evalJs(`document.getElementById('wmsWaves').value=''`);
+  const pickJobId = await startJob('pick_waves');
+  await poll(jobStatus(pickJobId), 'running', 100, 200);
   const busy = await evalJs(`(function(){
     return JSON.stringify({
       exportOff: document.getElementById('wmsExport').disabled,
@@ -354,10 +372,10 @@ T.withChrome(T.launchChrome({ port: PORT, userDataDir: USER_DIR }), async () => 
   await sleep(300);
   const conflictMsg = await evalJs(`document.getElementById('status').textContent`);
   assert(conflictMsg.indexOf('已有任务在执行') !== -1, '409 冲突应提示: ' + conflictMsg);
-  const pickReq = JSON.parse(await (await fetch('http://127.0.0.1:8000/api/__test/requests')).text()).filter(r => r.mode === 'pick_waves').pop();
+  const pickReq = JSON.parse(await (await fetch(SITE + '/api/__test/requests')).text()).filter(r => r.mode === 'pick_waves').pop();
   assert(pickReq && Array.isArray(pickReq.wave_nos) && pickReq.wave_nos.length === 0, '拣货请求应允许空波次列表: ' + JSON.stringify(pickReq));
   await evalJs(`(function(){ window.__dshTest.wms.active = true; document.getElementById('wmsRun').click(); return 1; })()`);
-  await poll(`(function(){var w=window.__dshTest.wms;return w.job && w.job.mode==='pick_waves' ? w.job.status : '';})()`, 'cancelled', 50, 200);
+  await poll(jobStatus(pickJobId), 'cancelled', 50, 200);
   const afterCancel = await evalJs(`(function(){
     return JSON.stringify({
       state: document.getElementById('wmsState').textContent,
@@ -424,5 +442,30 @@ T.withChrome(T.launchChrome({ port: PORT, userDataDir: USER_DIR }), async () => 
   assert(rc.state === '空闲' && rc.btnOn === true, '应恢复空闲且按钮可用: ' + rec);
   console.log('✔ 任务记录丢失（服务重启）：停止轮询、恢复空闲并提示刷新');
 
+  /* 7. 清理失败必须可见；日志重建不能丢失重试入口。 */
+  await evalJs(`fetch('/api/__test/fail-history-clear', {
+    method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({enabled:true})
+  }).then(r => r.ok)`);
+  await evalJs(`document.querySelector('#dash .arr-r[data-p="capacity"][data-ch="CBT"]').click()`);
+  await poll(`!!window.__dshTest.wms.historyRetryLink`, true);
+  assert(await evalJs(`window.__dshTest.wms.clearPending && window.__dshTest.wms.historyRetryLink.isConnected`), '清理失败应保留可见重试入口');
+  const jobsBeforeBlocked = mock.jobs.size;
+  await evalJs(`window.__dshTest.wmsSubmit('generate_waves')`);
+  assert(mock.jobs.size === jobsBeforeBlocked, '清理未确认时不能新建波次任务');
+  await evalJs(`window.__dshTest.wms.restoredIds.clear(); window.__dshTest.wmsRestore()`);
+  await poll(`!!(window.__dshTest.wms.historyRetryLink && window.__dshTest.wms.historyRetryLink.isConnected)`, true);
+  await evalJs(`fetch('/api/__test/fail-history-clear', {
+    method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({enabled:false})
+  }).then(r => r.ok)`);
+  await evalJs(`window.__dshTest.wms.historyRetryLink.click()`);
+  await poll(`window.__dshTest.wms.clearPending`, false);
+  assert(await evalJs(`window.__dshTest.wms.historyRetryLink === null`), '清理成功应移除旧重试入口');
+  console.log('✔ 历史清理失败可见、阻止新建波次，日志重建后可重试并恢复');
+
   console.log('\nWMS 联动 UI 测试全部通过 ✅');
 }, () => mock.close());
+})().catch(async error => {
+  console.error('✘ 模拟测试启动失败:', error.message);
+  await mock.close();
+  process.exitCode = 1;
+});

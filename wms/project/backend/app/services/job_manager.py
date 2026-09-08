@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
+import tempfile
 import time
+from contextlib import suppress
 from dataclasses import asdict
+from copy import deepcopy
 from datetime import date, datetime
 from typing import Literal
 from pathlib import Path
@@ -23,7 +27,8 @@ from app.automation import (
     WmsWavePrintAutomation,
 )
 from app.core.config import Settings
-from app.services.wave_records import upsert_records
+from app.services.wave_records import read_records, upsert_records
+from app.services.job_plans import save_plan, validate_plan
 
 
 JobStatus = Literal["queued", "running", "succeeded", "partial", "failed", "cancelled"]
@@ -55,6 +60,11 @@ class JobRecord(BaseModel):
     segments: list[dict[str, object]] = Field(default_factory=list)
     result: dict[str, str | int | list[str] | list[dict[str, object]]] | None = None
     error: str | None = None
+    persistence_error: str | None = None
+    batch_id: str | None = None
+    plan_id: str | None = None
+    has_plan_snapshot: bool = False
+    planning_export_file: str | None = None
 
 
 class JobManager:
@@ -95,19 +105,46 @@ class JobManager:
             return False
 
     def _load_persisted(self) -> None:
-        if not self._persist_enabled or not self._jobs_file.is_file():
+        if not self._persist_enabled:
             return
         try:
             raw = json.loads(self._jobs_file.read_text("utf-8"))
-        except Exception:
+        except FileNotFoundError:
             return
-        for item in raw if isinstance(raw, list) else []:
-            try:
+        except (json.JSONDecodeError, UnicodeError) as exc:
+            raise ValueError(f"任务历史无法读取，原文件已保留：{self._jobs_file}（{exc}）") from exc
+        # 先校验整份文件；不能跳过坏记录后把剩余部分覆盖回去。
+        try:
+            if not isinstance(raw, list):
+                raise ValueError("根节点必须是任务列表")
+            loaded: dict[str, JobRecord] = {}
+            for item in raw:
                 job = JobRecord.model_validate(item)
-            except Exception:
-                continue
-            if self._same_day(job.created_at):
+                datetime.fromisoformat(job.created_at)
+                datetime.fromisoformat(job.updated_at)
+                if not job.id or job.id in loaded:
+                    raise ValueError("任务 ID 为空或重复")
+                loaded[job.id] = job
+        except ValueError as exc:
+            raise ValueError(f"任务历史格式错误，原文件已保留：{self._jobs_file}（{exc}）") from exc
+        recovered = False
+        for job in loaded.values():
+            if job.status in {"queued", "running"}:
+                job.status = "failed"
+                job.error = "服务重启，原任务已中断；已确认结果已保留，其余操作结果待核对，请勿直接重复执行。"
+                job.updated_at = datetime.now().astimezone().isoformat()
+                job.events.append(JobEvent(stage="interrupted", message=job.error))
+                recovered = True
+            if self._retain(job):
                 self.jobs[job.id] = job
+        if recovered:
+            self._persist(force=True)
+
+    def _retain(self, job: JobRecord) -> bool:
+        # 跨午夜执行的任务不能被裁掉；重启发现的中断任务至少展示到恢复当天结束。
+        return self._same_day(job.created_at) or job.status in {"queued", "running"} or (
+            any(event.stage == "interrupted" and self._same_day(event.at) for event in job.events)
+        )
 
     def _persist(self, force: bool = False) -> None:
         """节流写盘：事件流最多每秒写一次；force=True（终态）总是写。"""
@@ -116,22 +153,62 @@ class JobManager:
         now = time.monotonic()
         if not force and now - self._last_persist < 1.0:
             return
-        self._last_persist = now
+        data = [job.model_dump(mode="json") for job in self.jobs.values() if self._retain(job)]
+        data.sort(key=lambda item: item.get("created_at", ""))
+        serialized = json.dumps(data, ensure_ascii=False, indent=1)
+        self._jobs_file.parent.mkdir(parents=True, exist_ok=True)
+        tmp: Path | None = None
         try:
-            data = [
-                job.model_dump(mode="json")
-                for job in self.jobs.values()
-                if self._same_day(job.created_at)
-            ]
-            data.sort(key=lambda item: item.get("created_at", ""))
-            # 原子写：先写临时文件再替换，避免崩溃留下半截 jobs.json
-            tmp = self._jobs_file.with_suffix(".json.tmp")
-            tmp.write_text(
-                json.dumps(data, ensure_ascii=False, indent=1), "utf-8"
-            )
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=self._jobs_file.parent,
+                prefix=".jobs-", suffix=".tmp", delete=False,
+            ) as temporary:
+                tmp = Path(temporary.name)
+                temporary.write(serialized)
             os.replace(tmp, self._jobs_file)
-        except Exception:
-            pass
+            self._last_persist = now
+        finally:
+            if tmp is not None:
+                with suppress(FileNotFoundError):
+                    tmp.unlink()
+
+    @staticmethod
+    def _storage_warning(job: JobRecord, target: str, exc: Exception) -> None:
+        message = f"{target}保存失败：{exc}。已确认结果仍保留在当前任务中；请先处理保存问题，勿重复执行 WMS 操作。"
+        if job.persistence_error != message:
+            job.events.append(JobEvent(stage="persistence_warning", message=message))
+        job.persistence_error = message
+
+    def _save_job(self, job: JobRecord, *, force: bool = False) -> bool:
+        job.updated_at = datetime.now().astimezone().isoformat()
+        try:
+            self._persist(force=force)
+            return True
+        except OSError as exc:
+            self._storage_warning(job, "任务记录", exc)
+            return False
+
+    def _save_wave_records(self, job: JobRecord) -> bool:
+        outcomes = (job.result or {}).get("segments", [])
+        try:
+            records = []
+            submitted = {(s["channel"], s["seg_name"]): s for s in job.segments}
+            for outcome in outcomes:
+                if not isinstance(outcome, dict) or not outcome.get("wave_no"):
+                    continue
+                record = dict(outcome)
+                if job.plan_id:
+                    segment = submitted.get((outcome.get("channel"), outcome.get("seg_name")))
+                    if segment is None:
+                        raise ValueError("已确认波次无法匹配提交分段")
+                    record.update(batch_id=job.batch_id, plan_id=job.plan_id,
+                                  job_id=job.id, order_nos=segment["order_nos"])
+                records.append(record)
+            upsert_records(self.wave_records_dir, records)
+            return True
+        except (OSError, ValueError) as exc:
+            self._storage_warning(job, "波次历史", exc)
+            return False
 
     def create(
         self,
@@ -140,6 +217,9 @@ class JobManager:
         *,
         wave_nos: list[str] | None = None,
         segments: list[dict[str, object]] | None = None,
+        batch_id: str | None = None,
+        plan_id: str | None = None,
+        plan_snapshot: dict | None = None,
     ) -> JobRecord:
         active_job = next(
             (job for job in self.jobs.values() if job.status in {"queued", "running"}),
@@ -149,26 +229,57 @@ class JobManager:
             raise ActiveJobConflictError(
                 "已有任务正在排队或执行，请等待当前任务结束后再提交。"
             )
+        if mode == "generate_waves":
+            # 已知历史不可读取时不要先去 WMS 建立波次。
+            read_records(self.wave_records_dir)
+        if any(v is not None for v in (batch_id, plan_id, plan_snapshot)):
+            if mode != "generate_waves" or not batch_id or not plan_id or plan_snapshot is None:
+                raise ValueError("计划身份与快照必须一起提交，且仅用于生成波次")
+            validate_plan(plan_snapshot, segments or [])
         job = JobRecord(
             id=uuid4().hex,
             mode=mode,
             browser_mode=browser_mode,
             wave_nos=list(wave_nos or []),
-            segments=list(segments or []),
+            segments=deepcopy(segments or []),
+            batch_id=batch_id, plan_id=plan_id, has_plan_snapshot=plan_snapshot is not None,
         )
+        if plan_snapshot is not None:
+            # 先保存不可变快照；任一步失败均不得启动生产任务。
+            save_plan(self.wave_records_dir, job.id, plan_snapshot)
         job.events.append(JobEvent(stage="queued", message="任务已进入队列。"))
         self.jobs[job.id] = job
-        self.tasks[job.id] = asyncio.create_task(self._execute(job.id))
-        self._persist()
+        try:
+            # 必须先成功保存接受的请求，再安排生产执行；不能被日志节流跳过。
+            self._persist(force=True)
+        except OSError:
+            del self.jobs[job.id]
+            raise
+        task = asyncio.create_task(self._execute(job.id))
+        self.tasks[job.id] = task
+        task.add_done_callback(lambda finished: self._release_task(job.id, finished))
         return job
+
+    def _release_task(self, job_id: str, task: asyncio.Task[None]) -> None:
+        # A terminal status alone is not enough: browser teardown and final
+        # persistence must finish before shutdown stops tracking this executor.
+        if self.tasks.get(job_id) is task:
+            del self.tasks[job_id]
+        if not task.cancelled():
+            error = task.exception()
+            if error is not None:
+                logging.getLogger(__name__).error(
+                    "后台任务 %s 意外退出", job_id,
+                    exc_info=(type(error), error, error.__traceback__),
+                )
 
     def get(self, job_id: str) -> JobRecord | None:
         return self.jobs.get(job_id)
 
     def list(self) -> list[JobRecord]:
-        # 只返回当天任务：与 jobs.json 的当天持久化口径一致（跨天不残留旧任务）
+        # 与 jobs.json 留存口径一致，包含尚在执行或今天恢复的跨日任务。
         return sorted(
-            (job for job in self.jobs.values() if self._same_day(job.created_at)),
+            (job for job in self.jobs.values() if self._retain(job)),
             key=lambda item: item.created_at,
             reverse=True,
         )[:50]
@@ -179,16 +290,23 @@ class JobManager:
         if not job:
             return None
         if task and not task.done():
-            task.cancel()
+            # A second cancellation must not interrupt browser teardown already
+            # underway (for example, service shutdown after the user cancelled).
+            if not task.cancelling():
+                task.cancel()
             try:
-                await task
+                await asyncio.shield(task)
             except asyncio.CancelledError:
-                pass
+                if not task.done():
+                    # The caller disappeared, but the executor still owns its
+                    # cleanup. It will persist its own terminal state on exit.
+                    raise
         if job.status in {"queued", "running"}:
             job.status = "cancelled"
             job.updated_at = datetime.now().astimezone().isoformat()
             if not job.events or job.events[-1].stage != "cancelled":
                 job.events.append(JobEvent(stage="cancelled", message="任务已取消。"))
+        self._save_job(job, force=True)
         return job
 
     async def _execute(self, job_id: str) -> None:
@@ -198,15 +316,25 @@ class JobManager:
             job.status = "running"
             job.updated_at = datetime.now().astimezone().isoformat()
             job.events.append(JobEvent(stage=stage, message=message))
-            self._persist()
             # 生成波次逐段上报：立即持久化，保证中断时已完成分段的波次号不丢失
             if stage == "segment_wave" and job.mode == "generate_waves":
-                try:
-                    data = json.loads(message)
-                    if isinstance(data, dict) and data.get("wave_no"):
-                        upsert_records(self.wave_records_dir, [data])
-                except Exception:
-                    pass
+                data = json.loads(message)
+                if not isinstance(data, dict) or not data.get("wave_no"):
+                    raise ValueError("分段成功事件缺少波次号，已停止。")
+                if job.result is None:
+                    job.result = {"mode": "generate_waves", "segments": []}
+                outcomes = job.result.setdefault("segments", [])
+                if not any(o.get("wave_no") == data["wave_no"] for o in outcomes):
+                    outcomes.append(data)
+                job.result["generated_count"] = len(outcomes)
+                # 先把业务事实存入任务；索引是派生记录，失败不能丢掉事实。
+                job_saved = self._save_job(job, force=True)
+                records_saved = self._save_wave_records(job)
+                if not job_saved or not records_saved:
+                    raise RuntimeError("已确认波次的本地记录保存失败，后续分段已停止；请核对已确认结果，勿重新生成。")
+            else:
+                # 普通日志写入失败会显示警告；确认波次的检查点必须强制成功。
+                self._save_job(job)
 
         try:
             async with self._run_lock:
@@ -250,35 +378,26 @@ class JobManager:
                 }
             job.status = "partial" if (result_data.get("failed_wave_nos") or result_data.get("failed_count")) else "succeeded"
             job.result = result_data
-            # 生成波次：把带波次号的分段结果持久化，供规划页回填波次表
-            if job.mode == "generate_waves":
-                seg_outcomes = result_data.get("segments")
-                if isinstance(seg_outcomes, list):
-                    upsert_records(
-                        self.wave_records_dir,
-                        [
-                            dict(o)
-                            for o in seg_outcomes
-                            if isinstance(o, dict) and o.get("wave_no")
-                        ],
-                    )
+            for warning in result_data.get("warnings", []):
+                if not any(event.message == warning for event in job.events):
+                    job.events.append(JobEvent(stage="warning", message=warning))
             completion_stage = (
-                "completed_with_warnings" if job.status == "partial" else "completed"
+                "completed_with_warnings"
+                if job.status == "partial" or result_data.get("warnings") else "completed"
             )
             job.events.append(
                 JobEvent(stage=completion_stage, message=str(result_data["message"]))
             )
-            self._persist(force=True)
         except asyncio.CancelledError:
             job.status = "cancelled"
             job.events.append(JobEvent(stage="cancelled", message="任务已取消。"))
-            self._persist(force=True)
             raise
         except Exception as exc:
             job.status = "failed"
             job.error = str(exc)
             job.events.append(JobEvent(stage="failed", message=str(exc)))
-            # 失败终态必须落盘：否则进程重启后失败结果丢失，操作员会误以为任务仍在运行
-            self._persist(force=True)
         finally:
-            job.updated_at = datetime.now().astimezone().isoformat()
+            # 保存/索引异常只附警告，不能覆盖已确认的业务结果，也不能再次抛错丢失终态。
+            if job.mode == "generate_waves" and job.result:
+                self._save_wave_records(job)
+            self._save_job(job, force=True)

@@ -1,18 +1,18 @@
 import pytest
+from unittest.mock import AsyncMock, Mock
 
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from app.api.routes import CreateJobRequest
-from app.main import app
 
 
-def test_health() -> None:
+def test_health(app) -> None:
     with TestClient(app) as client:
         assert client.get("/api/health").json() == {"status": "ok"}
 
 
-def test_production_export_requires_confirmation() -> None:
+def test_production_export_requires_confirmation(app) -> None:
     with TestClient(app) as client:
         response = client.post(
             "/api/jobs",
@@ -21,7 +21,7 @@ def test_production_export_requires_confirmation() -> None:
         assert response.status_code == 422
 
 
-def test_wave_batch_requires_confirmation() -> None:
+def test_wave_batch_requires_confirmation(app) -> None:
     with TestClient(app) as client:
         response = client.post(
             "/api/jobs",
@@ -73,7 +73,7 @@ def test_wave_pick_request_allows_empty_or_normalizes_selected_waves() -> None:
     assert selected_waves.wave_nos == ["W003", "W001"]
 
 
-def test_wave_pick_request_rejects_unsafe_or_too_many_values() -> None:
+def test_wave_pick_request_rejects_unsafe_or_too_many_values(app) -> None:
     with pytest.raises(ValidationError, match="波次号格式异常"):
         CreateJobRequest.model_validate({
             "mode": "pick_waves",
@@ -81,15 +81,18 @@ def test_wave_pick_request_rejects_unsafe_or_too_many_values() -> None:
             "wave_nos": ["../../unsafe"],
         })
 
-    with pytest.raises(ValidationError, match="一次最多拣货 500 个不同波次"):
-        CreateJobRequest.model_validate({
+    with TestClient(app) as client:
+        response = client.post("/api/jobs", json={
             "mode": "pick_waves",
             "confirm_production": True,
             "wave_nos": [f"W{index:04d}" for index in range(501)],
         })
+        assert response.status_code == 422
+        assert "一次最多拣货 500 个不同波次" in str(response.json())
+        assert not app.state.job_manager.tasks
 
 
-def test_export_file_download_serves_only_download_dir(tmp_path) -> None:
+def test_export_file_download_serves_only_download_dir(tmp_path, app) -> None:
     from app.services.job_manager import JobRecord
 
     with TestClient(app) as client:
@@ -137,7 +140,7 @@ def test_export_file_download_serves_only_download_dir(tmp_path) -> None:
         settings.downloads_dir = original
 
 
-def test_merged_pdf_download_serves_only_outputs_dir(tmp_path) -> None:
+def test_merged_pdf_download_serves_only_outputs_dir(tmp_path, app) -> None:
     from app.services.job_manager import JobRecord
 
     with TestClient(app) as client:
@@ -195,7 +198,99 @@ def test_generate_waves_requires_segments_and_safe_order_nos() -> None:
     assert ok.segments[0]["order_nos"] == ["OBS1", "OBS2", "OBS3"]
 
 
-def test_exports_save_and_download(tmp_path) -> None:
+@pytest.mark.parametrize("field,value", [
+    ("order_nos", "OBS1"),
+    ("order_nos", 123),
+    ("order_nos", False),
+    ("order_nos", None),
+    ("order_nos", {"OBS1": True}),
+    ("order_nos", ["OBS1", 123]),
+    ("order_nos", ["OBS1", True]),
+    ("order_nos", ["OBS1", None]),
+    ("order_nos", ["OBS1", ["OBS2"]]),
+    ("order_nos", ["OBS1", {"order_no": "OBS2"}]),
+    ("channel", 123),
+    ("channel", None),
+    ("channel", ["CBT"]),
+    ("seg_name", 123),
+    ("seg_name", None),
+    ("seg_name", {"name": "单件1"}),
+])
+def test_generate_waves_rejects_wrong_types_before_creating_job(
+    app, monkeypatch, field, value,
+) -> None:
+    segment = {"channel": "CBT", "seg_name": "单件1", "order_nos": ["OBS1"]}
+    segment[field] = value
+    with TestClient(app) as client:
+        manager = app.state.job_manager
+        create = Mock(side_effect=AssertionError("Invalid input must not create a job"))
+        execute = AsyncMock(side_effect=AssertionError("Invalid input must not run automation"))
+        monkeypatch.setattr(manager, "create", create)
+        monkeypatch.setattr(manager, "_execute", execute)
+
+        response = client.post("/api/jobs", json={
+            "mode": "generate_waves", "confirm_production": True,
+            "segments": [segment],
+        })
+
+        assert response.status_code == 422
+        assert response.json()["detail"][0]["type"] == "value_error"
+        create.assert_not_called()
+        execute.assert_not_called()
+        assert manager.jobs == {}
+        assert manager.tasks == {}
+
+
+def test_generate_waves_rejects_non_list_iterable_order_nos() -> None:
+    with pytest.raises(ValidationError, match="出库单号必须是字符串列表"):
+        CreateJobRequest.model_validate({
+            "mode": "generate_waves", "confirm_production": True,
+            "segments": [{
+                "channel": "CBT", "seg_name": "单件1", "order_nos": ("OBS1", "OBS2"),
+            }],
+        })
+
+
+def test_generate_waves_http_preserves_normalization_and_payload_shape(app, monkeypatch) -> None:
+    from app.services.job_manager import JobRecord
+
+    normalized = [
+        {"channel": "CBT", "seg_name": "单件1", "order_nos": ["OBS2", "OBS1"]},
+        {"channel": "USPS", "seg_name": "混件1", "order_nos": ["OBS3"]},
+    ]
+    record = JobRecord(id="test-generated", mode="generate_waves", segments=normalized)
+    create = Mock(return_value=record)
+    with TestClient(app) as client:
+        monkeypatch.setattr(app.state.job_manager, "create", create)
+        response = client.post("/api/jobs", json={
+            "mode": "generate_waves", "browser_mode": "headless", "confirm_production": True,
+            "segments": [
+                {"channel": "  CBT  ", "seg_name": " 单件1 ",
+                 "order_nos": [" OBS2 ", "OBS1", "OBS2", "", "   "]},
+                {"channel": "USPS", "seg_name": "混件1", "order_nos": ["OBS3"]},
+            ],
+        })
+
+        assert response.status_code == 202
+        assert response.json()["segments"] == normalized
+        assert response.json()["id"] == "test-generated"
+        create.assert_called_once_with(
+            "generate_waves", "headless", wave_nos=[], segments=normalized,
+            batch_id=None, plan_id=None, plan_snapshot=None,
+        )
+
+
+def test_generate_waves_validation_does_not_change_downstream_order_count_handling() -> None:
+    # Pagination / per-wave handling remains the automation's responsibility.
+    order_nos = [f"OBS{index:04d}" for index in range(701)]
+    payload = CreateJobRequest.model_validate({
+        "mode": "generate_waves", "confirm_production": True,
+        "segments": [{"channel": "CBT", "seg_name": "单件1", "order_nos": order_nos}],
+    })
+    assert payload.segments[0]["order_nos"] == order_nos
+
+
+def test_exports_save_and_download(tmp_path, app) -> None:
     with TestClient(app) as client:
         settings = app.state.settings
         original = settings.outputs_dir
@@ -220,7 +315,7 @@ def test_exports_save_and_download(tmp_path) -> None:
         settings.outputs_dir = original
 
 
-def test_wave_records_endpoint(tmp_path) -> None:
+def test_wave_records_endpoint(tmp_path, app) -> None:
     from app.services.wave_records import upsert_records
 
     with TestClient(app) as client:
@@ -236,14 +331,10 @@ def test_wave_records_endpoint(tmp_path) -> None:
         assert records and records[0]["wave_no"] == "W0092608180011"
 
 
-def test_exports_list_returns_todays_files_only(tmp_path) -> None:
+def test_exports_list_returns_todays_files_only(tmp_path, app) -> None:
     import os
     import time
     from datetime import datetime
-
-    from fastapi.testclient import TestClient
-
-    from app.main import app
 
     with TestClient(app) as client:
         settings = app.state.settings.model_copy(

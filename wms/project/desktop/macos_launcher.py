@@ -51,7 +51,7 @@ def configure_runtime() -> Path:
         "WMS_AUTOMATION_CONFIG": resources / "config" / "automation.json",
         "WMS_BROWSER_PROFILE": support / "browser-profile",
         "WMS_DOWNLOADS_DIR": support / "downloads",
-        "WMS_SECONDARY_DOWNLOADS_DIR": Path.home() / "Downloads",
+        "WMS_OUTPUTS_DIR": support / "outputs",
     }
     for name, value in runtime_paths.items():
         os.environ.setdefault(name, str(value))

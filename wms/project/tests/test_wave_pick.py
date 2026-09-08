@@ -7,6 +7,7 @@ from app.automation.common import AutomationError
 from app.automation.wave_pending import PendingWave
 from app.automation.wms_wave_pick import CompletedWave, WmsWavePickAutomation
 from app.core.config import Settings
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 
 def make_automation() -> WmsWavePickAutomation:
@@ -214,6 +215,36 @@ async def test_network_error_does_not_stop_later_batches() -> None:
     assert any(
         call.args[0] == "network_error_ignored" for call in progress.await_args_list
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error", [
+    PlaywrightTimeoutError("Locator.click: Timeout exceeded; overlay intercepts pointer events"),
+    PlaywrightTimeoutError("Locator.wait_for: Timeout exceeded; confirm not visible"),
+    TimeoutError("confirmation result timed out"),
+])
+async def test_ui_timeout_stops_later_batches_without_retry_and_preserves_completed_logs(error):
+    automation = make_automation()
+    waves = [PendingWave(f"W{index:03d}") for index in range(1, 9)]
+    automation.pending_waves.snapshot = AsyncMock(return_value=waves)
+    automation.pending_waves.prepare_page = AsyncMock()
+    automation.pending_waves.find_remaining = AsyncMock(return_value=[])
+
+    async def fake_pick(page, wave, progress, sequence, total):
+        if wave.wave_no == "W002":
+            raise error
+        return CompletedWave(wave.wave_no, 1)
+
+    automation._pick_wave = AsyncMock(side_effect=fake_pick)
+    progress = AsyncMock()
+    context, _ = make_context()
+    with pytest.raises(AutomationError, match="已完成 4/8.*后续批次已停止") as failure:
+        await automation._run_all_pending(context, progress)
+    assert [call.args[1].wave_no for call in automation._pick_wave.await_args_list] == [w.wave_no for w in waves[:5]]
+    assert all(no in str(failure.value) for no in ["W001", "W003", "W004", "W005"])
+    assert not any(call.args[0] == "network_error_ignored" for call in progress.await_args_list)
+    assert sum(call.args[0] == "wave_completed" for call in progress.await_args_list) == 4
+    automation.pending_waves.find_remaining.assert_not_awaited()
 
 
 @pytest.mark.asyncio

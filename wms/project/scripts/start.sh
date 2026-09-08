@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd -P)"
 PYTHON_BIN="$ROOT_DIR/.venv/bin/python"
+IDENTITY_TOOL="$ROOT_DIR/scripts/service_identity.py"
 DEFAULT_IP="${HOST:-127.0.0.1}"
 DEFAULT_PORT="${PORT:-8000}"
 
@@ -114,6 +115,8 @@ done
 
 [[ -n "$BIND_IP" && "$BIND_IP" != *[[:space:]]* ]] || fail "IP 地址不能为空或包含空格"
 [[ "$SERVICE_PORT" =~ ^[0-9]+$ ]] || fail "端口必须为整数：$SERVICE_PORT"
+[[ ${#SERVICE_PORT} -le 5 ]] || fail "端口必须位于 1 到 65535 之间：$SERVICE_PORT"
+SERVICE_PORT=$((10#$SERVICE_PORT))
 (( SERVICE_PORT >= 1 && SERVICE_PORT <= 65535 )) || fail "端口必须位于 1 到 65535 之间：$SERVICE_PORT"
 
 LOG_FILE="$(resolve_path "${LOG_FILE:-logs/service-$SERVICE_PORT.log}")"
@@ -123,7 +126,8 @@ read_pid() {
   local pid=""
   [[ -f "$PID_FILE" ]] || return 1
   IFS= read -r pid < "$PID_FILE" || true
-  [[ "$pid" =~ ^[0-9]+$ ]] || return 1
+  [[ "$pid" =~ ^[1-9][0-9]{0,9}$ ]] || return 1
+  (( pid > 1 && pid <= 2147483647 )) || return 1
   printf '%s\n' "$pid"
 }
 
@@ -132,9 +136,21 @@ process_alive() {
 }
 
 pid_matches_service() {
-  local command_line=""
-  command_line="$(/bin/ps -p "$1" -o command= 2>/dev/null || true)"
-  [[ "$command_line" == *"uvicorn app.main:app"* && "$command_line" == *"--port $SERVICE_PORT"* ]]
+  [[ -x "$PYTHON_BIN" && -f "$IDENTITY_TOOL" ]] || return 1
+  "$PYTHON_BIN" "$IDENTITY_TOOL" verify --pid "$1" --pid-file "$PID_FILE" \
+    --project "$ROOT_DIR" --port "$SERVICE_PORT"
+}
+
+record_identity() {
+  [[ "$(read_pid || true)" == "$1" ]] || return 1
+  "$PYTHON_BIN" "$IDENTITY_TOOL" record --pid "$1" --pid-file "$PID_FILE" \
+    --project "$ROOT_DIR" --ip "$BIND_IP" --port "$SERVICE_PORT"
+}
+
+remove_owned_pid() {
+  # Do not remove a newer invocation's PID/identity while cleaning up an old one.
+  [[ "$(read_pid || true)" == "$1" ]] || return 0
+  rm -f "$PID_FILE" "$PID_FILE.identity.json"
 }
 
 port_pids() {
@@ -163,6 +179,7 @@ service_healthy() {
 
 check_runtime() {
   [[ -x "$PYTHON_BIN" ]] || fail "依赖尚未安装，请先运行 ./scripts/setup.sh。"
+  [[ -f "$IDENTITY_TOOL" ]] || fail "缺少 scripts/service_identity.py，请使用完整项目。"
   if [[ ! -f "$ROOT_DIR/frontend/dist/index.html" ]]; then
     echo "错误：未找到控制台页面 frontend/dist/index.html。" >&2
     echo "请在 planner/ 中运行 python3 build.py（会自动部署到本目录）。" >&2
@@ -171,7 +188,7 @@ check_runtime() {
 }
 
 start_service() {
-  local pid="" owners="" i=""
+  local pid="" owners="" i="" identified="false"
   check_runtime
 
   pid="$(read_pid || true)"
@@ -180,11 +197,11 @@ start_service() {
       echo "服务已经运行：PID ${pid}，http://${BIND_IP}:${SERVICE_PORT}/"
       return 0
     fi
-    echo "错误：PID 文件指向其它存活进程（PID ${pid}），为避免误杀已拒绝启动。" >&2
+    echo "错误：PID 文件指向存活进程（PID ${pid}），但无法可靠确认归属，已拒绝启动。" >&2
     echo "请核对后手动移除：$PID_FILE" >&2
     return 2
   fi
-  [[ -z "$pid" ]] || rm -f "$PID_FILE"
+  [[ -z "$pid" ]] || remove_owned_pid "$pid"
 
   owners="$(port_pids)"
   if [[ -n "$owners" ]]; then
@@ -201,19 +218,22 @@ start_service() {
 
   cd "$ROOT_DIR"
   PYTHONPATH=backend nohup "$PYTHON_BIN" -m uvicorn app.main:app \
-    --host "$BIND_IP" --port "$SERVICE_PORT" >> "$LOG_FILE" 2>&1 < /dev/null &
+    --app-dir "$ROOT_DIR/backend" --host "$BIND_IP" --port "$SERVICE_PORT" >> "$LOG_FILE" 2>&1 < /dev/null &
   pid=$!
   printf '%s\n' "$pid" > "$PID_FILE.tmp"
   mv "$PID_FILE.tmp" "$PID_FILE"
 
   for i in {1..40}; do
     if ! process_alive "$pid"; then
-      rm -f "$PID_FILE"
+      remove_owned_pid "$pid"
       echo "错误：服务启动后立即退出，请检查日志：$LOG_FILE" >&2
       tail -n 20 "$LOG_FILE" >&2 || true
       return 1
     fi
-    if service_healthy; then
+    if [[ "$identified" == "false" ]] && record_identity "$pid"; then
+      identified="true"
+    fi
+    if [[ "$identified" == "true" ]] && pid_matches_service "$pid" && service_healthy; then
       echo "服务启动成功：PID $pid"
       echo "访问地址：http://$BIND_IP:$SERVICE_PORT/"
       echo "日志文件：$LOG_FILE"
@@ -224,8 +244,13 @@ start_service() {
   done
 
   echo "错误：服务进程已启动，但健康检查在 10 秒内未通过。" >&2
-  kill "$pid" 2>/dev/null || true
-  rm -f "$PID_FILE"
+  if [[ "$identified" == "true" ]] && pid_matches_service "$pid"; then
+    kill "$pid" 2>/dev/null || true
+    # Retain identity until termination is confirmed, so a slow exit stays manageable.
+    if ! process_alive "$pid"; then remove_owned_pid "$pid"; fi
+  else
+    echo "无法确认 PID $pid 的完整身份，未终止进程；请核对 PID 文件和日志。" >&2
+  fi
   tail -n 20 "$LOG_FILE" >&2 || true
   return 1
 }
@@ -238,12 +263,13 @@ stop_service() {
     return 0
   fi
   if ! process_alive "$pid"; then
-    rm -f "$PID_FILE"
+    remove_owned_pid "$pid"
     echo "已清理失效 PID 文件；服务当前未运行。"
     return 0
   fi
   if ! pid_matches_service "$pid"; then
-    echo "错误：PID $pid 不是当前端口的波次规划服务，为避免误杀已拒绝停止。" >&2
+    echo "错误：无法确认 PID $pid 属于本项目、本端口及原启动实例，已拒绝停止。" >&2
+    echo "旧版或缺失身份记录的 PID 文件不会自动接管，请核对原启动进程。" >&2
     return 2
   fi
 
@@ -251,17 +277,29 @@ stop_service() {
   kill "$pid"
   for i in {1..40}; do
     if ! process_alive "$pid"; then
-      rm -f "$PID_FILE"
+      remove_owned_pid "$pid"
       echo "服务已停止。"
       return 0
     fi
     sleep 0.25
   done
 
-  echo "服务未在 10 秒内退出，正在强制终止 PID ${pid}。" >&2
+  if ! pid_matches_service "$pid"; then
+    echo "等待期间进程身份已变化或无法确认，未强制终止 PID ${pid}，保留记录供核对。" >&2
+    return 2
+  fi
+  echo "服务未在 10 秒内退出，已重新确认身份，正在强制终止 PID ${pid}。" >&2
   kill -9 "$pid" 2>/dev/null || true
-  rm -f "$PID_FILE"
-  echo "服务已强制停止。"
+  for i in {1..20}; do
+    if ! process_alive "$pid"; then
+      remove_owned_pid "$pid"
+      echo "服务已强制停止。"
+      return 0
+    fi
+    sleep 0.1
+  done
+  echo "无法确认进程已退出，保留 PID 与身份记录，请核对。" >&2
+  return 2
 }
 
 status_service() {
@@ -269,7 +307,7 @@ status_service() {
   pid="$(read_pid || true)"
   if [[ -n "$pid" ]] && process_alive "$pid"; then
     if ! pid_matches_service "$pid"; then
-      echo "状态异常：PID 文件指向其它进程（PID ${pid}）。" >&2
+      echo "状态异常：无法确认 PID ${pid} 的项目、端口或原启动身份（旧版 PID 文件也不会自动接管）。" >&2
       return 2
     fi
     if service_healthy; then

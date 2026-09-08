@@ -18,6 +18,9 @@ wms/project/data/jobs.json
 wms/project/data/wave-records.json
 wms/project/data/step-control.json
 wms/project/data/service-*.pid
+wms/project/data/service-*.pid.identity.json
+wms/project/data/.wms-service.lock
+wms/project/data/plans/
 wms/project/logs/
 wms/project/nohup.out
 wms/project/downloads/*
