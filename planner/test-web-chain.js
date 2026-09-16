@@ -32,7 +32,7 @@ T.withChrome({}, async chrome => {
   await send('Emulation.setDeviceMetricsOverride', { width: 1920, height: 950, deviceScaleFactor: 1, mobile: false });
   await send('Page.navigate', { url: HTML });
   await poll(`document.readyState`, 'complete');
-  await poll(`document.querySelectorAll('#dash .prow').length`, 12);
+  await poll(`document.querySelectorAll('#dash .prow').length`, 13);
 
   /* 1. 导入 */
   await evalJs(T.importFileExpr(SAMPLE));

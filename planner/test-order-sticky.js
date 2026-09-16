@@ -13,6 +13,8 @@ T.withChrome({}, async chrome => {
   });
   await send('Page.navigate', { url: P.html });
   await poll('document.readyState', 'complete');
+  // Validate the original fixed order with USPS subdivision disabled.
+  await evalJs('window.__dshTest.toggleUspsSubdivision(); true');
   await poll("document.querySelectorAll('#dash .prow').length", 12);
 
   /* 显式切到“降序”再切回“固定”，避免只验证初始默认值。 */

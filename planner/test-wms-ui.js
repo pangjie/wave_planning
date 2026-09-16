@@ -37,6 +37,8 @@ const mock = createMockServer({ samplePath: SAMPLE, htmlSource: HTML_SOURCE });
   await send('Page.navigate', { url: SITE + '/' });
   await poll(`document.readyState`, 'complete');
   await poll(`window.__dshTest && window.__dshTest.wms && window.__dshTest.wms.available`, true);
+  // Retain legacy channel fixtures; subdivision has its own dedicated coverage.
+  await evalJs('window.__dshTest.toggleUspsSubdivision(); true');
   console.log('✔ 页面加载，检测到本地 WMS 服务');
 
   /* 1. 面板初始状态 */

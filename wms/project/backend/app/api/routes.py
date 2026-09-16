@@ -234,10 +234,8 @@ async def save_job_export(job_id: str, request: Request, manager: JobManager = D
     job = manager.get(job_id)
     if not job or not job.has_plan_snapshot:
         raise HTTPException(status_code=404, detail="任务没有提交计划快照。")
-    if job.status in {"queued", "running"} or not any(
-        isinstance(s, dict) and s.get("wave_no") for s in (job.result or {}).get("segments", [])
-    ):
-        raise HTTPException(status_code=409, detail="任务尚无可导出的已确认波次。")
+    if job.status in {"queued", "running"}:
+        raise HTTPException(status_code=409, detail="任务尚未结束，请等待执行和清理完成后导出。")
     body = await request.body()
     if len(body) < 1000 or body[:4] != b"PK\x03\x04":
         raise HTTPException(status_code=400, detail="导出文件内容无效。")

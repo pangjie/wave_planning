@@ -150,6 +150,42 @@ function singleRows(count, prefix = 'ORDER') {
   return Array.from({ length: count }, (_, i) => [`${prefix}${i + 1}`, '单品单件', 'CBT', '', 'SKU-AUDIT', 1]);
 }
 
+test('USPS subdivision: default, toggle, absorption and distinct wave identities with USPS-only export labels', async t => {
+  const h = harness(t);
+  const pic = stc => { const s = '92'+stc+'0'.repeat(16); let sum=0; for(let i=s.length-1,w=3;i>=0;i--,w=4-w) sum+=Number(s[i])*w; return s+((10-sum%10)%10); };
+  h.importRows([['H','单品单件','USPS',pic('184'),'A',1],['G','单品单件','USPS',pic('144'),'B',1]]);
+  await drainMicrotasks();
+  assert.equal(h.api.state.uspsSplit,true);
+  assert.deepEqual(Array.from(h.api.state.records,r=>r.channelId),['USPS-H','USPS-G']);
+  let segments = h.audit.effectiveSegments();
+  assert.equal(segments.length,2);
+  segments.forEach((s,i)=>h.api.state.waveNos.set(s.channel+'|'+s.seg_name,'W'+i));
+  const table = h.audit.exportData().sheets.find(s=>s.name==='波次表');
+  assert.equal(table.waveRefs.length,2);
+  table.waveRefs.forEach((ref,i)=>{
+    assert.match(ref.channel,/^USPS-[HG]$/);
+    assert.ok(!table.aoa[ref.row][0].includes('-H') && !table.aoa[ref.row][0].includes('-G'));
+    assert.equal(table.aoa[ref.row][2],'W'+i);
+  });
+  h.api.wms.active=true;
+  h.api.toggleUspsSubdivision();
+  assert.equal(h.api.state.uspsSplit,true);
+  h.api.wms.active=false;
+  h.api.toggleUspsSubdivision();
+  assert.equal(h.api.state.uspsSplit,false);
+  assert.ok(h.api.state.records.every(r=>r.channelId==='USPS'));
+  h.api.toggleUspsSubdivision();
+  // VM render is stubbed; synchronize through the same export path as the UI.
+  h.audit.exportData();
+  h.api.toggleOrdinaryEvolution();
+  h.audit.exportData();
+  h.api.state.modes.normal.sel.channels.delete('USPS-H');
+  h.api.state.analysis.ordinary=null;
+  assert.equal(h.api.curAnalysis().channels.find(c=>c.id==='普通').total,1);
+  h.audit.toggleMerge();
+  assert.equal(h.api.curAnalysis().channels.find(c=>c.id==='普通').total,2);
+});
+
 function analyzeRows(h, rows) {
   const imported = h.core.buildRecords(rows, h.core.mapHeaders(HEADERS));
   return h.core.analyze(imported.records, imported.qtyMap, 'normal', {});
@@ -397,20 +433,17 @@ for (const terminalStatus of ['succeeded', 'partial', 'cancelled', 'failed']) {
     });
     h.audit.startPolling({ ...finished, status: 'running', result: null }, true);
     await h.audit.cancel();
-    const shouldExport = ['succeeded', 'partial'].includes(terminalStatus);
-    assert.equal(uploaded.length, shouldExport ? 1 : 0, 'Cancellation must not lose an already-completed export or export a cancelled task');
+    assert.equal(uploaded.length, 1, 'Every ended generation task must export its submitted plan');
     assert.equal(h.api.wms.job.status, terminalStatus);
     assert.equal(h.api.wms.active, false);
     assert.equal(h.api.wms.jobId, null);
     assert.equal(h.api.state.waveNos.get('CBT|爆品1'), 'W-cancel-race', 'Confirmed results remain visible regardless of terminal status');
-    if (shouldExport) {
-      const workbook = XLSX.read(uploaded[0], { type: 'buffer' });
-      assert.equal(workbook.Sheets['波次表']['C2'].v, 'W-cancel-race');
-      assert.equal(workbook.Sheets['波次表']['G2'].v, 25);
-      assert.equal(workbook.SheetNames.length, 9);
-    }
+    const workbook = XLSX.read(uploaded[0], { type: 'buffer' });
+    assert.equal(workbook.Sheets['波次表']['C2'].v, 'W-cancel-race');
+    assert.equal(workbook.Sheets['波次表']['G2'].v, 25);
+    assert.equal(workbook.SheetNames.length, 9);
     await h.api.wmsRestore();
-    assert.equal(uploaded.length, shouldExport ? 1 : 0, 'Later restore must not duplicate the export');
+    assert.equal(uploaded.length, 1, 'Later restore must not duplicate the export');
   });
 }
 
@@ -817,10 +850,14 @@ for (const mismatch of ['legacy', 'batch', 'plan', 'orders', 'duplicate-orders',
   });
 }
 
-test('A03: reload exports completed task from server snapshot without any imported current file', async t => {
+for (const status of ['succeeded', 'partial', 'cancelled', 'failed']) {
+for (const completed of [false, true]) {
+test(`Stopped plan: restore ${status}, confirmed=${completed}, without a current import`, async t => {
   const source = harness(t);
   source.importRows(singleRows(25));
   const job = bindJob(source, generatedJob('restored'));
+  job.status = status;
+  if (!completed) job.result = null;
   const saved = source.api.wms.planSnapshots.get(job.id);
   const restored = harness(t);
   let uploads = 0;
@@ -836,6 +873,58 @@ test('A03: reload exports completed task from server snapshot without any import
   await restored.api.wmsRestore();
   assert.equal(uploads, 1);
 });
+}
+}
+
+for (const stopStatus of ['cancelled', 'failed']) {
+for (const completed of [false, true]) {
+test(`Stopped plan: ${stopStatus}, confirmed=${completed}, exports all original sheets and retries identical bytes`, async t => {
+  const h = harness(t);
+  h.importRows(singleRows(800).map((row, i) => { row[4] = 'SKU-' + Math.floor(i / 100); return row; }));
+  await drainMicrotasks();
+  const job = bindJob(h, generatedJob('stopped'));
+  job.status = stopStatus;
+  const first = job.segments[0];
+  job.result = completed ? { segments: [{channel:first.channel, seg_name:first.seg_name, wave_no:'WCONFIRMED'}] } : null;
+  const saved = h.api.wms.planSnapshots.get(job.id);
+  const table = saved.snapshot.workbook.sheets.find(s => s.name === '波次表');
+  table.waveRefs.forEach(r => { table.aoa[r.row][2] = 'OLD-WAVE'; });
+  const uploads = [];
+  let fail = true;
+  h.route(r => {
+    if (r.url === '/api/jobs/stopped') return Promise.resolve(response(job));
+    if (r.url.endsWith('/planning-export')) {
+      uploads.push(Buffer.from(r.options.body));
+      return Promise.resolve(response({}, fail ? 503 : 200));
+    }
+  });
+  h.audit.startPolling({...job, status:'running', result:null}, true);
+  h.importRows(singleRows(40, 'NEW-ORDER'));
+  await h.api.wmsPollOnce();
+  assert.equal(uploads.length, 1);
+  assert.equal(h.api.state.waveNos.size, 0, 'Old stopped plan must not mark new orders');
+  assert.ok(h.logs.some(l => l.text.includes('计划 ' + job.segments.length)));
+  if (!completed) assert.ok(h.logs.some(l => l.text.includes('未确认生成任何波次')));
+  const wb = XLSX.read(Buffer.from(uploads[0]), {type:'buffer'});
+  assert.equal(wb.SheetNames.length, 9);
+  for (const sheet of saved.snapshot.workbook.sheets) {
+    const expected = JSON.parse(JSON.stringify(sheet.aoa));
+    if (sheet.name === '波次表') {
+      sheet.waveRefs.forEach(r => { expected[r.row][2] = completed && r.channel === first.channel && r.seg_name === first.seg_name ? 'WCONFIRMED' : ''; });
+    }
+    assert.deepEqual(XLSX.utils.sheet_to_json(wb.Sheets[sheet.name], {header:1}),
+      XLSX.utils.sheet_to_json(XLSX.utils.aoa_to_sheet(expected), {header:1}), sheet.name);
+  }
+  assert.equal(table.aoa[table.waveRefs[0].row][2], 'OLD-WAVE', 'Snapshot itself is immutable');
+  fail = false;
+  await h.audit.autoExport(job);
+  assert.deepEqual(uploads[1], uploads[0]);
+  await h.audit.autoExport(job);
+  assert.equal(uploads.length, 2);
+  assert.equal(h.requests.filter(r => r.url === '/api/jobs' && r.method === 'POST').length, 0);
+});
+}
+}
 
 test('A03: a snapshot read failure retries the original job, never the current plan', async t => {
   const h = harness(t);

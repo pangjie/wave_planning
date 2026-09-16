@@ -22,6 +22,8 @@ T.withChrome({}, async chrome => {
 
 
   await poll(`document.readyState`, 'complete');
+  // Keep legacy fixtures for the disabled subdivision mode.
+  await evalJs('window.__dshTest.toggleUspsSubdivision(); true');
   await poll(`document.querySelectorAll('#dash .prow').length`, 12);
   await sleep(750); // 等待入场动画结束后测量最终布局。
   console.log('✔ 页面加载');

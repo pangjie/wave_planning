@@ -49,6 +49,36 @@ var CHANNEL_COLORS = {
 };
 function colorOf(id) { return CHANNEL_COLORS[id] || 'F0F2F5'; }
 
+// USPS subdivision rules, pinned to Service Type Codes 2026-06-24.
+var USPS_H_STCS = new Set('037 063 075 116 120 121 166 184 185 186 187 190 191 217 218 219 220 223 323 362 363 365 383 385 388 395 399 483 515 517 628 646 665 667 668 760 761 762 763 764 837 838 839'.split(' '));
+CHANNEL_COLORS['USPS-H'] = 'F5E4D4';
+CHANNEL_COLORS['USPS-G'] = 'E6F4E6';
+function uspsType(raw) {
+  if (typeof raw !== 'string') return 'USPS-G';
+  function valid(pic) {
+    if (!/^9[2345](?:[0-9]{20}|[0-9]{24})$/.test(pic)) return false;
+    var sum = Number(pic[pic.length - 1]);
+    for (var i = pic.length - 2, weight = 3; i >= 0; i--, weight = 4 - weight) sum += Number(pic[i]) * weight;
+    return sum % 10 === 0;
+  }
+  var text = raw.replace(/\s+/g, ''), pic = null;
+  if (valid(text)) pic = text;
+  else if (/^420[0-9]+$/.test(text)) {
+    var candidates = [text.slice(8), text.slice(12)].filter(valid);
+    if (candidates.length === 1) pic = candidates[0];
+  }
+  return pic && USPS_H_STCS.has(pic.slice(2, 5)) ? 'USPS-H' : 'USPS-G';
+}
+function applyUspsSubdivision(records, enabled) {
+  records.forEach(function (r) {
+    if (!r.baseChannelId) r.baseChannelId = r.channelId;
+    r.channelId = enabled && r.baseChannelId === 'USPS' ? (r.uspsType || 'USPS-G') : r.baseChannelId;
+  });
+}
+function uspsChannelList(ids, enabled) {
+  return ids.flatMap(function (id) { return enabled && id === 'USPS' ? ['USPS-H', 'USPS-G'] : [id]; });
+}
+
 /* ---------- 2. 文本与数字清洗 ---------- */
 function normHeader(v) {
   return String(v == null ? '' : v).trim().replace(/\s+/g, '').toLowerCase();
@@ -142,7 +172,8 @@ function buildRecords(dataRows, headerMap) {
     var outNo = text(row[col['outboundorderno/出库单号']]);
     var carrier = text(row[col['shippingcarrier/物流承运商']]);
     var type = text(row[col['typeofordervariety/订单品种类型']]);
-    var tracking = text(row[col['package1trackingno./物流跟踪号']]);
+    var rawTracking = row[col['package1trackingno./物流跟踪号']];
+    var tracking = text(rawTracking);
     var customer = customerCol >= 0 ? text(row[customerCol]) : '';
     var skus = skuCols.map(function (ci) { return text(row[ci]); });
     var qty = parseQty(row[col['totalqtyofsku/总数量']]);
@@ -169,6 +200,7 @@ function buildRecords(dataRows, headerMap) {
       byOrder.set(orderNo, rec);
       records.push(rec);
     }
+    if (rec.uspsType !== 'USPS-H') rec.uspsType = uspsType(rawTracking);
     if (!rec.customer && customer) rec.customer = customer;
     skus.forEach(function (s) {
       if (s !== '' && rec.skus.indexOf(s) === -1) {
@@ -602,7 +634,7 @@ function sortByDefault(chans) {
   return chans;
 }
 function sortByFixed(chans, mode) {
-  var fixed = mode === 'merged' ? FIXED_MERGED_ORDER : FIXED_CHANNEL_ORDER;
+  var fixed = mode === 'merged' ? FIXED_MERGED_ORDER : uspsChannelList(FIXED_CHANNEL_ORDER, chans.some(function (ch) { return ch.id === 'USPS-H' || ch.id === 'USPS-G'; }));
   var rank = new Map();
   fixed.forEach(function (id, i) { rank.set(id, i); });
   chans.sort(function (a, b) {
@@ -642,7 +674,7 @@ function buildClassSeq(records) {
 }
 
 /* ---------- 12. 全量分析 ---------- */
-function analyze(records, qtyMap, mode, paramsFor) {
+function analyze(records, qtyMap, mode, paramsFor, uspsSplit) {
   var resolver = typeof paramsFor === 'function' ? paramsFor : function (id) {
     return (paramsFor && paramsFor[id]) || {
       hotLine: DEFAULT_UNIFIED.hotLine, capacity: DEFAULT_UNIFIED.capacity,
@@ -657,7 +689,7 @@ function analyze(records, qtyMap, mode, paramsFor) {
     arr.push(r);
   });
   /* 空渠道（订单 0）也列入，与参照一致 */
-  (mode === 'merged' ? MERGED_CHANNELS : DOMAIN_CHANNELS).forEach(function (id) {
+  (mode === 'merged' ? MERGED_CHANNELS : uspsChannelList(DOMAIN_CHANNELS, uspsSplit)).forEach(function (id) {
     if (!byChan.has(id)) byChan.set(id, []);
   });
   var chans = [];
@@ -674,7 +706,7 @@ function analyze(records, qtyMap, mode, paramsFor) {
     });
   });
   return {
-    mode: mode, channels: chans, totals: totals, waveStats: waveStats,
+    mode: mode, uspsSplit: !!uspsSplit, channels: chans, totals: totals, waveStats: waveStats,
     classSeq: buildClassSeq(records), records: records, qtyMap: qtyMap
   };
 }
@@ -875,11 +907,11 @@ function sheetWaveTable(blocks, waveNos) {
       waveRefs.push({ channel: b.ch.id, seg_name: seg.name, row: r });
       var waveNo = waveNos ? (waveNos.get(b.ch.id + '|' + seg.name) || '') : '';
       aoa.push([
-        b.ch.name + KIND_SHORT[seg.kind], '', waveNo, KIND_TYPE[seg.kind], '',
+        (/^USPS-[HG]$/.test(b.ch.id) ? 'USPS' : b.ch.name) + KIND_SHORT[seg.kind], '', waveNo, KIND_TYPE[seg.kind], '',
         seg.skuCount, seg.orderCount, seg.pickQty, ''
       ]);
       /* 数据行按渠道着色，颜色与分组结果一致；表头/分隔行不填充 */
-      var fill = fillOf(b.ch.id);
+      var fill = fillOf(/^USPS-[HG]$/.test(b.ch.id) ? 'USPS' : b.ch.id);
       for (var cc = 0; cc < 9; cc++) {
         var align = cc === 0 ? 'left' : (cc >= 5 && cc <= 7 ? 'center' : 'left');
         styles.push({ r: r, c: cc, s: { fill: fill, alignment: { horizontal: align, vertical: 'center' } } });
@@ -1002,25 +1034,27 @@ function buildCustomerStats(records, blocks) {
       a.name.localeCompare(b.name, 'zh') || a.code.localeCompare(b.code, 'zh');
   });
 }
-function customerChannelIds(stats) {
+function customerChannelIds(stats, uspsSplit) {
   /* 固定列保证不同批次导出的客户统计结构一致；新识别出的扩展渠道追加在末尾。 */
-  var ids = new Set(FIXED_CHANNEL_ORDER);
+  var split = uspsSplit || stats.some(function (item) { return Object.keys(item.channelCounts || {}).some(function (id) { return /^USPS-[HG]$/.test(id); }); });
+  var fixed = uspsChannelList(FIXED_CHANNEL_ORDER, split);
+  var ids = new Set(fixed);
   stats.forEach(function (item) {
     Object.keys(item.channelCounts || {}).forEach(function (id) {
       if (id !== '未识别') ids.add(id);
     });
   });
   var rank = new Map();
-  FIXED_CHANNEL_ORDER.forEach(function (id, i) { rank.set(id, i); });
+  fixed.forEach(function (id, i) { rank.set(id, i); });
   return Array.from(ids).sort(function (a, b) {
     var ar = rank.has(a) ? rank.get(a) : Infinity;
     var br = rank.has(b) ? rank.get(b) : Infinity;
     return ar - br || a.localeCompare(b, 'zh');
   });
 }
-function sheetCustomerStats(records, blocks) {
+function sheetCustomerStats(records, blocks, uspsSplit) {
   var stats = buildCustomerStats(records, blocks);
-  var channelIds = customerChannelIds(stats);
+  var channelIds = customerChannelIds(stats, uspsSplit);
   var header = ['客户名称', '客户代码', '订单总量', '拣货总件数', 'SKU激活数量', '单件', '多件', '混件'];
   channelIds.forEach(function (id) { header.push(id + '订单', id + '占比'); });
   var aoa = [header];
@@ -1218,7 +1252,7 @@ function buildExport(analysis, exportState) {
     sheetGroupSkuPool(blocks),
     sheetWaveTable(blocks, exportState.waveNos || null),
     sheetChannelStats(analysis.channels, selected, segSelected),
-    sheetCustomerStats(analysis.records || [], blocks),
+    sheetCustomerStats(analysis.records || [], blocks, analysis.uspsSplit),
     sheetSingleSeq(analysis.channels, selected, segSelected),
     sheetMultiSeq(analysis.channels, selected, segSelected),
     sheetMixSeq(analysis.channels, selected, segSelected),
@@ -1603,6 +1637,7 @@ function downloadWorkbook(exportData) {
 /* ---------- Node 测试钩子 ---------- */
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
+    uspsType: uspsType, applyUspsSubdivision: applyUspsSubdivision, USPS_H_STCS: USPS_H_STCS,
     parseQty: parseQty, locateSheet: locateSheet, mapHeaders: mapHeaders,
     buildRecords: buildRecords, trackingChannel: trackingChannel,
     linearPartition: linearPartition, analyzeChannel: analyzeChannel,

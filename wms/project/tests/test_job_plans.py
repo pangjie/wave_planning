@@ -159,6 +159,44 @@ def test_export_persistence_failure_reuses_file_on_retry(app, monkeypatch):
         assert list(app.state.settings.outputs_dir.glob("*.xlsx")) == files
 
 
+@pytest.mark.parametrize("state", ["queued", "running", "succeeded", "partial", "cancelled", "failed"])
+@pytest.mark.parametrize("confirmed", [False, True])
+def test_export_accepts_every_terminal_plan_including_zero_completed(app, state, confirmed):
+    with TestClient(app) as client:
+        manager = app.state.job_manager
+        job = seed_job(manager)
+        job.status = state
+        if not confirmed:
+            job.result = None
+        content = b"PK\x03\x04" + b"original-plan" * 200
+        response = client.post(f"/api/jobs/{job.id}/planning-export", content=content)
+        if state in {"queued", "running"}:
+            assert response.status_code == 409
+            assert not list(app.state.settings.outputs_dir.glob("*.xlsx"))
+        else:
+            assert response.status_code == 200
+            manager._load_persisted()
+            retry = client.post(f"/api/jobs/{job.id}/planning-export", content=content)
+            assert retry.json() == response.json()
+            assert len(list(app.state.settings.outputs_dir.glob("*.xlsx"))) == 1
+
+
+@pytest.mark.parametrize("confirmed", [False, True])
+def test_restart_interrupted_generation_can_export_saved_plan(app, confirmed):
+    with TestClient(app) as client:
+        manager = app.state.job_manager
+        job = seed_job(manager)
+        job.status = "running"
+        if not confirmed:
+            job.result = None
+        manager._persist(force=True)
+        manager._load_persisted()
+        assert manager.get(job.id).status == "failed"
+        assert client.get(f"/api/jobs/{job.id}/plan").status_code == 200
+        response = client.post(f"/api/jobs/{job.id}/planning-export", content=b"PK\x03\x04" + b"plan" * 400)
+        assert response.status_code == 200
+
+
 def test_scoped_history_api_and_incomplete_identity(app):
     with TestClient(app) as client:
         data = app.state.job_manager.wave_records_dir

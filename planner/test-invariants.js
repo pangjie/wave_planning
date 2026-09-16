@@ -23,6 +23,8 @@ T.withChrome({}, async chrome => {
   await drv.enablePage();
   await send('Page.navigate', { url: 'file://' + HTML_SOURCE });
   await poll(`window.__dshTest ? true : false`, true, 100, 100);
+  // Original USPS fixtures cover subdivision-off behavior.
+  await evalJs('window.__dshTest.toggleUspsSubdivision(); true');
 
   /* 导入样例文件 */
   await evalJs(T.importFileExpr(SAMPLE));

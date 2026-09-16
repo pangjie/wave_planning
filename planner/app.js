@@ -19,6 +19,7 @@
   var CH_TEXT_COLOR = {
     'CBT': '#c4b5fd', 'CBS': '#86efac', 'SwiftX': '#93c5fd', 'SpeedX': '#fdba74',
     'YanWen': '#5eead4', 'Gofo': '#67e8f9', 'UPS': '#a5b4fc', 'USPS': '#6ee7b7',
+    'USPS-H': '#fdba74', 'USPS-G': '#6ee7b7',
     'Fedex': '#fda4af', 'UniUni': '#7dd3fc', 'BFE': '#fde68a', '未识别': '#9ca3af', '普通': '#cbd5e1'
   };
   function chColor(id) { return CH_TEXT_COLOR[id] || '#c9d1d9'; }
@@ -32,7 +33,10 @@
       sel: { channels: new Set(), segs: new Set(), seenChannels: new Set(), seenSegs: new Set() }
     };
   }
+  var uspsSplitDefault = true;
+  try { uspsSplitDefault = localStorage.getItem('wave-usps-split') !== 'off'; } catch (e) { }
   var state = {
+    uspsSplit: uspsSplitDefault,
     waveNos: new Map(),  // 分段键(chId|segName) -> 波次号（生成波次后回填）
     records: [],
     qtyMap: {},
@@ -50,7 +54,7 @@
   function planIdentity() {
     if (!state.batchId) state.batchId = newPlanId();
     var m = ms();
-    var signature = JSON.stringify([state.batchId, state.merged, state.ordinaryEvolved,
+    var signature = JSON.stringify([state.batchId, state.merged, state.ordinaryEvolved, state.uspsSplit,
       m.unified, Array.from(m.per), m.order, Array.from(m.sel.channels).sort(), Array.from(m.sel.segs).sort()]);
     if (state.planSignature !== signature) {
       state.planSignature = signature;
@@ -88,11 +92,14 @@
   function getAnalysis(key) {
     key = key === 'merged' ? 'merged' : 'normal';
     if (!state.analysis[key]) {
-      state.analysis[key] = analyze(state.records, state.qtyMap, key, paramsResolver(key));
+      state.analysis[key] = analyze(state.records, state.qtyMap, key, paramsResolver(key), state.uspsSplit);
     }
     if (key === 'normal' && state.ordinaryEvolved) {
       if (!state.analysis.ordinary) {
         var normalMode = state.modes.normal;
+        // Source segments must receive their default selection before deciding
+        // which orders are disabled and therefore absorbed by Ordinary.
+        syncSelection(state.analysis.normal, normalMode);
         state.analysis.ordinary = buildOrdinaryEvolvedAnalysis(
           state.analysis.normal, state.records, state.qtyMap, paramsResolver('normal'),
           normalMode.sel.channels, normalMode.sel.segs
@@ -262,8 +269,8 @@
     state.modes.normal.unified = keepN;
     state.modes.merged.unified = keepM;
   }
-  function syncSelection(a) {
-    var m = ms();
+  function syncSelection(a, m) {
+    m = m || ms();
     a.channels.forEach(function (ch) {
       if (!m.sel.seenChannels.has(ch.id)) {
         m.sel.seenChannels.add(ch.id);
@@ -287,6 +294,7 @@
         if (!br.records.length) throw new Error('「出库单」工作表中没有有效订单数据');
         clearData();
         state.records = br.records;
+        applyUspsSubdivision(state.records, state.uspsSplit);
         state.qtyMap = br.qtyMap;
         var a = getAnalysis(modeKey());
         syncSelection(a);
@@ -435,6 +443,7 @@
       var p = m.per.get(ch.id) || m.unified;
       var holdHint = !state.merged && ((!state.ordinaryEvolved && ch.id === '未识别') || (state.ordinaryEvolved && ch.id === '普通'))
         ? (state.ordinaryEvolved ? ' · 按住3秒退化为未识别' : ' · 按住3秒进化为普通') : '';
+      if (!state.merged && /^USPS(?:-[HG])?$/.test(ch.id)) holdHint = ' · 按住3秒' + (state.uspsSplit ? '关闭' : '开启') + 'USPS细分';
       rows += '<tr class="prow' + (m.sel.channels.has(ch.id) ? '' : ' off') + '" data-ch="' + esc(ch.id) + '">' +
         '<td class="left"><div class="ch-cell">' +
         '<span class="chn" role="button" aria-pressed="' + (m.sel.channels.has(ch.id) ? 'true' : 'false') +
@@ -770,6 +779,35 @@
     chnPress = { el: null, x: 0, y: 0, moved: false };
     render();
   }
+  function toggleUspsSubdivision() {
+    if (state.merged || (wms && (wms.active || wms.submitting))) return;
+    var m = state.modes.normal;
+    if (!state.uspsSplit) {
+      ['USPS-H', 'USPS-G'].forEach(function (id) {
+        if (!m.per.has(id)) m.per.set(id, Object.assign({}, m.per.get('USPS') || m.unified));
+      });
+    }
+    state.uspsSplit = !state.uspsSplit;
+    try { localStorage.setItem('wave-usps-split', state.uspsSplit ? 'on' : 'off'); } catch (e) { }
+    ['USPS', 'USPS-H', 'USPS-G'].forEach(function (id) {
+      m.sel.channels.delete(id); m.sel.seenChannels.delete(id);
+      [m.sel.segs, m.sel.seenSegs].forEach(function (set) {
+        Array.from(set).forEach(function (key) { if (key.indexOf(id + '|') === 0) set.delete(key); });
+      });
+    });
+    var order = [];
+    m.order.list.forEach(function (id) {
+      var ids = /^USPS(?:-[HG])?$/.test(id) ? (state.uspsSplit ? ['USPS-H', 'USPS-G'] : ['USPS']) : [id];
+      ids.forEach(function (v) { if (order.indexOf(v) < 0) order.push(v); });
+    });
+    m.order.list = order;
+    applyUspsSubdivision(state.records, state.uspsSplit);
+    invalidate('normal'); invalidate('merged');
+    clearOrdinarySegSelection(m);
+    wmsClearWaveHistory();
+    chnPress = { el: null, x: 0, y: 0, moved: false };
+    render();
+  }
   function toggleSortMode() {
     var order = ms().order;
     order.sortMode = order.sortMode === 'desc' ? 'fixed' : 'desc';
@@ -790,7 +828,8 @@
   var evolutionHold = { timer: null, el: null, pointerId: null, x: 0, y: 0 };
   var suppressChannelClickUntil = 0;
   function isEvolutionTarget(el) {
-    if (!el || state.merged) return false;
+    if (!el || state.merged || (wms && (wms.active || wms.submitting))) return false;
+    if (/^USPS(?:-[HG])?$/.test(el.dataset.ch)) return true;
     return (!state.ordinaryEvolved && el.dataset.ch === '未识别') ||
       (state.ordinaryEvolved && el.dataset.ch === '普通');
   }
@@ -810,8 +849,10 @@
     evolutionHold.timer = setTimeout(function () {
       if (!evolutionHold.el || !isEvolutionTarget(evolutionHold.el)) return;
       suppressChannelClickUntil = Date.now() + 900;
+      var usps = /^USPS(?:-[HG])?$/.test(evolutionHold.el.dataset.ch);
       cancelEvolutionHold();
-      toggleOrdinaryEvolution();
+      if (usps) toggleUspsSubdivision();
+      else toggleOrdinaryEvolution();
     }, 3000);
   }
   function clearDropMarks() {
@@ -1324,7 +1365,14 @@
     // same once-only result handling; clicking cancel cannot undo completion.
     if (WMS_DONE.indexOf(job.status) === -1 || wms.terminalJobs.has(job.id)) return;
     wms.terminalJobs.add(job.id);
-    if (job.mode === 'generate_waves') await wmsApplyWaveNos(job);
+    if (job.mode === 'generate_waves') {
+      if (job.status === 'cancelled' || job.status === 'failed') {
+        var confirmed = ((job.result && job.result.segments) || []).filter(function (s) { return s.wave_no; }).length;
+        wmsLogLine('任务已停止：已完成 ' + confirmed + ' / 计划 ' + job.segments.length + ' 个分段；将按提交计划保存波次规划。' +
+          (confirmed ? '' : '本次未确认生成任何波次。'), 'warn');
+      }
+      await wmsApplyWaveNos(job);
+    }
     else if (job.status === 'succeeded' && job.mode === 'export') await wmsAutoImport(job, wms.pollEpoch);
   }
   function wmsStartPolling(job, alreadyRendered) {
@@ -1491,14 +1539,12 @@
       if (wms.historyRequest === request) wms.historyRequest = null;
     }
   }
-  /* 生成波次完成：回填波次号（分段文字变绿），成功/部分完成时自动导出一次并给下载链接 */
+  /* 任务结束后回填已确认波次，并导出完整提交计划，包括取消、失败和零完成。 */
   async function wmsApplyWaveNos(job) {
     var outcomes = (job.result && job.result.segments) || [];
-    var anyWave = false;
     var changed = false;
     outcomes.forEach(function (o) {
       if (o.wave_no) {
-        anyWave = true;
         var key = o.channel + '|' + o.seg_name;
         if (jobSegmentMatches(job, o) && state.waveNos.get(key) !== o.wave_no) {
           state.waveNos.set(key, o.wave_no);
@@ -1515,7 +1561,7 @@
         updateMarksInPlace();
       } catch (e) { }
     }
-    if (anyWave && (job.status === 'succeeded' || job.status === 'partial')) {
+    if (WMS_DONE.indexOf(job.status) !== -1) {
       await wmsAutoExport(job);
     }
   }
@@ -1578,6 +1624,12 @@
           var data = JSON.parse(JSON.stringify(saved.snapshot.workbook));
           var table = data.sheets.find(function (s) { return s.name === '波次表'; });
           if (!table || !Array.isArray(table.waveRefs) || table.waveRefs.length !== job.segments.length) throw new Error('提交计划波次表无效');
+          // Snapshot may contain earlier runs' numbers. Only this job's confirmed
+          // results belong in its export; keep the cached original untouched.
+          table.waveRefs.forEach(function (ref) {
+            if (!table.aoa[ref.row]) throw new Error('提交计划波次行无效');
+            table.aoa[ref.row][2] = '';
+          });
           var outcomes = (job.result && job.result.segments) || [];
           outcomes.forEach(function (o) {
             if (!o.wave_no) return;
@@ -1677,7 +1729,7 @@
           }
           // 页面离线时已完成的计划也能从提交快照恢复导出，无需重新执行 WMS。
           for (var j of jobs) {
-            if (j.mode === 'generate_waves' && (j.status === 'succeeded' || j.status === 'partial') && !wms.terminalJobs.has(j.id)) {
+            if (j.mode === 'generate_waves' && WMS_DONE.indexOf(j.status) !== -1 && !wms.terminalJobs.has(j.id)) {
               await wmsHandleTerminal(j);
             }
           }
@@ -1701,6 +1753,7 @@
     curAnalysis: curAnalysis,
     getAnalysis: getAnalysis,
     toggleOrdinaryEvolution: toggleOrdinaryEvolution,
+    toggleUspsSubdivision: toggleUspsSubdivision,
     buildExportBuffer: wmsBuildExportBuffer,
     buildExportNow: function () {
       return currentExportData();
