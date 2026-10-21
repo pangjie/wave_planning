@@ -25,7 +25,11 @@ def make_automation(tmp_path: Path | None = None) -> WmsWavePrintAutomation:
 
 
 def fake_pdf(path: Path) -> None:
-    path.write_bytes(b"%PDF-1.7\n" + b"0" * 6_000)
+    from pypdf import PdfWriter
+    writer = PdfWriter()
+    writer.add_blank_page(width=612, height=792)
+    writer.add_metadata({"/Subject": "test" * 1600})
+    writer.write(path)
 
 
 def test_print_request_validation_deduplicates_and_rejects_unsafe_values() -> None:
@@ -191,19 +195,10 @@ async def test_parallel_print_skips_missing_wave_and_preserves_remaining_order(
     context.new_page = AsyncMock(side_effect=pages[1:])
     progress = AsyncMock()
 
-    result = await automation._run_selected(
-        context,
-        progress,
-        ["W003", "W002", "W001", "W004"],
-        "Paper合并_2026-07-18.pdf",
-    )
-
-    assert result.wave_nos == ["W003", "W001", "W004"]
-    assert result.failed_wave_nos == ["W002"]
-    merger.merge.assert_awaited_once_with(
-        [tmp_path / "W003.pdf", tmp_path / "W001.pdf", tmp_path / "W004.pdf"],
-        tmp_path / "Paper合并_2026-07-18.pdf",
-    )
+    with pytest.raises(AutomationError, match="仅完成 3/4"):
+        await automation._run_selected(context, progress,
+                                      ["W003", "W002", "W001", "W004"], "Paper合并_2026-07-18.pdf")
+    merger.merge.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -5,6 +5,10 @@ import os
 import re
 import shutil
 import tempfile
+import hashlib
+import json
+from uuid import uuid4
+from pypdf import PdfReader
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
@@ -105,6 +109,13 @@ class QpdfMerger:
             raise AutomationError("没有可合并的波次 PDF。")
         for path in inputs:
             _validate_pdf(path, label=f"波次文件 {path.name}")
+        try:
+            page_counts = [len(PdfReader(path).pages) for path in inputs]
+            expected_pages = sum(page_counts)
+        except Exception as exc:
+            raise AutomationError(f"源 PDF 无法完整读取：{exc}") from exc
+        if not all(page_counts):
+            raise AutomationError("源 PDF 包含空文件，不能合并。")
 
         output.parent.mkdir(parents=True, exist_ok=True)
         descriptor, temporary_name = tempfile.mkstemp(
@@ -132,6 +143,8 @@ class QpdfMerger:
                 detail = stderr.decode("utf-8", errors="replace").strip()
                 raise AutomationError(f"qpdf 合并失败：{detail or '未知错误'}")
             _validate_pdf(temporary, label="合并文件")
+            if len(PdfReader(temporary).pages) != expected_pages:
+                raise AutomationError("合并 PDF 页数与源文件总页数不一致，未发布文件。")
             os.replace(temporary, output)
         finally:
             try:
@@ -160,11 +173,17 @@ class WmsWavePrintAutomation:
         *,
         wave_nos: list[str],
         headless: bool | None = None,
+        completed_files: dict[str, dict[str, str]] | None = None,
     ) -> WavePrintResult:
         selected = self._validate_request(wave_nos)
         effective_headless = resolve_headless(self.settings, headless)
         browser_label = "无头" if effective_headless else "有头"
-        merged_output_name = _dated_merge_filename()
+        merged_output_name = Path(_dated_merge_filename()).stem + '-' + uuid4().hex[:12] + '.pdf'
+        reusable = self._reusable_files(selected, completed_files or {})
+        if completed_files:
+            await progress("resume_print", f"已验证可复用 {len(reusable)}/{len(selected)} 个 PDF；其余节点将重新打印，WMS 可能记录为重打。")
+        if len(reusable) == len(selected):
+            return await self._finish_print(progress, selected, [reusable[w] for w in selected], merged_output_name, "", [])
         await progress(
             "launching",
             f"正在以{browser_label}模式启动专用浏览器；将使用最多 "
@@ -184,9 +203,41 @@ class WmsWavePrintAutomation:
                 progress,
                 selected,
                 merged_output_name,
+                reusable,
             )
         result.warnings.extend(cleanup_warnings)
         return result
+
+    def _reusable_files(self, selected: list[str], files: dict[str, dict[str, str]]) -> dict[str, Path]:
+        reusable = {}
+        for wave in selected:
+            entry = files.get(wave)
+            if not entry:
+                continue
+            try:
+                path = Path(entry["path"])
+                if path.resolve().parent != self.settings.outputs_dir.resolve():
+                    continue
+                _validate_pdf(path, label=wave)
+                if not len(PdfReader(path).pages):
+                    continue
+                if hashlib.sha256(path.read_bytes()).hexdigest() == entry["sha256"]:
+                    reusable[wave] = path
+            except Exception:
+                # Missing/corrupt artifacts require a new print, never a silent omission.
+                continue
+        return reusable
+
+    async def _finish_print(self, progress, wave_nos, files, name, url, warnings):
+        merged_file = self.settings.outputs_dir / name
+        await progress("merging_pdfs", f"全部 {len(files)} 个波次 PDF 已就绪，正在按原顺序合并。")
+        await self.merger.merge(files, merged_file)
+        await progress("merged_pdf_saved", f"合并完成：{merged_file}")
+        return WavePrintResult(mode="print_waves", wave_nos=wave_nos, failed_wave_nos=[],
+                               warnings=warnings, printed_files=[str(p) for p in files],
+                               merged_file=str(merged_file), current_url=url,
+                               message=f"已完成 {len(files)}/{len(wave_nos)} 个波次并合并为 {name}。",
+                               completed_at=datetime.now().astimezone().isoformat())
 
     def _validate_request(
         self,
@@ -211,6 +262,7 @@ class WmsWavePrintAutomation:
         progress: ProgressCallback,
         wave_nos: list[str],
         merged_output_name: str,
+        reusable: dict[str, Path] | None = None,
     ) -> WavePrintResult:
         # WMS may capture window.print while its own scripts initialize. Install
         # the interceptor before opening print-center pages, then verify it again
@@ -232,7 +284,7 @@ class WmsWavePrintAutomation:
             "合并顺序仍与输入顺序一致。",
         )
 
-        printed_by_index: list[Path | None] = [None] * total
+        printed_by_index: list[Path | None] = [(reusable or {}).get(w) for w in wave_nos]
         failed_wave_nos: list[str] = []
         warnings: list[str] = []
 
@@ -252,6 +304,8 @@ class WmsWavePrintAutomation:
                 wave_no: str,
             ) -> Path:
                 sequence = batch_start + slot_index + 1
+                if printed_by_index[sequence - 1] is not None:
+                    return printed_by_index[sequence - 1]
                 await progress(
                     "locating_wave",
                     f"第 {sequence}/{total} 个：正在“"
@@ -266,6 +320,16 @@ class WmsWavePrintAutomation:
                     total,
                     output_dir,
                 )
+                # Save an immutable validated artifact before this page completes,
+                # so another failing page cannot lose the successful checkpoint.
+                _validate_pdf(printed_file, label=wave_no)
+                if not len(PdfReader(printed_file).pages):
+                    raise AutomationError(f"波次 {wave_no} PDF 没有页面")
+                checkpoint = output_dir / f"打印节点-{wave_no}-{uuid4().hex}.pdf"
+                content = printed_file.read_bytes()
+                checkpoint.write_bytes(content)
+                await progress("print_checkpoint", json.dumps({"wave_no": wave_no, "path": str(checkpoint),
+                               "sha256": hashlib.sha256(content).hexdigest()}))
                 await progress(
                     "wave_pdf_saved",
                     f"第 {sequence}/{total} 个：波次 {wave_no} "
@@ -324,9 +388,9 @@ class WmsWavePrintAutomation:
             if path is not None
         ]
 
-        if not printed_files:
+        if len(printed_files) != total:
             raise AutomationError(
-                "输入的波次均未在当前列表中找到，没有生成或合并任何 PDF。"
+                f"仅完成 {len(printed_files)}/{total} 个波次 PDF；缺少：{'、'.join(failed_wave_nos)}。已保留完成节点，请重试任务。"
             )
 
         merged_file = output_dir / merged_output_name

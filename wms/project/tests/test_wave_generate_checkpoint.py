@@ -60,7 +60,7 @@ async def test_confirmed_segment_save_failure_stops_without_reclassifying_or_rec
     assert raised.value is failure
     automation._generate_one.assert_awaited_once()
     assert page.goto.await_count == 1  # Initial navigation only; no recovery / next segment.
-    assert [stage for stage, _ in events] == ["launching", "searching", "segment_wave"]
+    assert [stage for stage, _ in events] == ["launching", "searching", "segment_start", "segment_wave"]
     assert json.loads(events[-1][1]) == {
         "channel": "CBT", "seg_name": "单件1", "wave_no": "W001", "order_count": 2,
     }
@@ -171,11 +171,8 @@ async def test_missing_wave_number_still_has_one_unsuccessful_outcome(mocked_run
     async def progress(stage, message):
         events.append((stage, message))
 
-    result = await automation.run(progress, headless=True, segments=SEGMENTS[:1])
-
-    assert result.generated_count == 0
-    assert result.failed_count == 1
-    assert len(result.segments) == 1
-    assert result.segments[0].note == "未能提取波次号"
+    with pytest.raises(AutomationError, match="未取得确认波次号"):
+        await automation.run(progress, headless=True, segments=SEGMENTS[:1])
+    assert any(stage == "wave_submitting" for stage, _ in events)
     assert not any(stage == "segment_wave" for stage, _ in events)
     assert page.goto.await_count == 1

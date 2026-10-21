@@ -54,6 +54,10 @@ async def run_cleanup(
 WAVE_NO_PATTERN = re.compile(r"[A-Za-z0-9_-]+")
 
 
+class CheckpointError(RuntimeError):
+    """A durable execution boundary could not be saved; do not continue."""
+
+
 class AutomationError(RuntimeError):
     """An automation failure safe to expose in the job log."""
 

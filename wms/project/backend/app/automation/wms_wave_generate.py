@@ -11,6 +11,7 @@ from playwright.async_api import Locator, Page, TimeoutError as PlaywrightTimeou
 
 from app.automation.common import (
     AutomationError,
+    CheckpointError,
     ProgressCallback,
     SearchResultNotAppliedError,
     first_page,
@@ -109,6 +110,13 @@ class WmsWaveGenerateAutomation:
                 ]
                 label = f"{channel} {seg_name}"
                 note: str | None = None
+                submitted = False
+
+                async def segment_progress(stage: str, message: str) -> None:
+                    nonlocal submitted
+                    if stage == "wave_submitting":
+                        submitted = True
+                    await progress(stage, message)
                 if len(order_nos) > cfg.multi_search_max_lines:
                     outcomes.append(SegmentWaveOutcome(
                         channel=channel, seg_name=seg_name,
@@ -128,15 +136,21 @@ class WmsWaveGenerateAutomation:
                     f"第 {index}/{total} 个分段：{label}，准备粘贴 {len(order_nos)} 个出库单号。",
                 )
                 try:
+                    await progress("segment_start", json.dumps({"channel": channel, "seg_name": seg_name}))
                     wave_no = await self._generate_one(
-                        page, order_nos, label, progress,
+                        page, order_nos, label, segment_progress,
                         prev_expected=prev_count,
                     )
+                except CheckpointError:
+                    raise
                 except AutomationError as exc:
                     note = str(exc)
                 except Exception as exc:
                     note = f"未预期错误：{exc}"
                 else:
+                    if not wave_no:
+                        await progress("wave_submitting", label)
+                        raise AutomationError(f"分段 {label} 未取得确认波次号，请人工核对；已停止后续分段。")
                     outcomes.append(SegmentWaveOutcome(
                         channel=channel, seg_name=seg_name,
                         order_count=len(order_nos), wave_no=wave_no,
@@ -187,9 +201,11 @@ class WmsWaveGenerateAutomation:
                         channel=channel, seg_name=seg_name,
                         order_count=len(order_nos), wave_no=None, note=note,
                     ))
+                    if submitted:
+                        raise AutomationError(f"分段 {label} 已尝试提交但结果未确认：{note}。已停止后续分段，请人工核对；不会直接重试提交。")
                     await progress(
                         "segment_failed",
-                        f"分段 {label} 失败：{note}。不重试该分段，恢复页面后继续下一分段。",
+                        f"分段 {label} 失败：{note}。本轮不重试该分段，恢复页面后继续；任务结束后可手动重试未完成节点。",
                     )
                     try:
                         await page.goto(cfg.target_url, timeout=cfg.timeouts_ms.navigation)
@@ -402,6 +418,9 @@ class WmsWaveGenerateAutomation:
             ),
             "生成波次“确定”按钮", timeouts.dialog,
         )
+        # Persist the uncertainty boundary BEFORE the production click. A timeout
+        # or lost response after this point must never permit a blind resubmit.
+        await progress("wave_submitting", label)
         await confirm.click(timeout=timeouts.action)
 
         # 7) 提取后立即交回 run 保存；页面收尾必须在确认记录之后。

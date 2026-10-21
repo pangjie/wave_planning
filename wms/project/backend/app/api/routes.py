@@ -192,6 +192,22 @@ async def cancel_job(job_id: str, manager: JobManager = Depends(get_manager)) ->
     return job
 
 
+class RetryJobRequest(BaseModel):
+    confirm_production: bool = False
+
+
+@router.post("/jobs/{job_id}/retry", response_model=JobRecord, status_code=202)
+async def retry_job(job_id: str, payload: RetryJobRequest, manager: JobManager = Depends(get_manager)) -> JobRecord:
+    if not payload.confirm_production:
+        raise HTTPException(status_code=422, detail="重试需要确认生产操作。")
+    try:
+        return manager.retry(job_id)
+    except (ActiveJobConflictError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=503, detail=f"续跑记录无法读取或保存，未启动：{exc}") from exc
+
+
 @router.get("/jobs/{job_id}/plan")
 async def get_job_plan(job_id: str, manager: JobManager = Depends(get_manager)) -> dict:
     from app.services.job_plans import read_plan
@@ -240,7 +256,8 @@ async def save_job_export(job_id: str, request: Request, manager: JobManager = D
     if len(body) < 1000 or body[:4] != b"PK\x03\x04":
         raise HTTPException(status_code=400, detail="导出文件内容无效。")
     outputs_dir = Path(request.app.state.settings.outputs_dir)
-    name = f"波次规划{job.created_at[:10].replace('-', '')}-{job.id}.xlsx"
+    version = f"-r{job.attempt}" if job.attempt > 1 else ""
+    name = f"波次规划{job.created_at[:10].replace('-', '')}-{job.id}{version}.xlsx"
     target = outputs_dir / name
     tmp = None
     try:

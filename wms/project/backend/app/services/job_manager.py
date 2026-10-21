@@ -27,8 +27,9 @@ from app.automation import (
     WmsWavePrintAutomation,
 )
 from app.core.config import Settings
+from app.automation.common import CheckpointError
 from app.services.wave_records import read_records, upsert_records
-from app.services.job_plans import save_plan, validate_plan
+from app.services.job_plans import save_plan, validate_plan, read_plan
 
 
 JobStatus = Literal["queued", "running", "succeeded", "partial", "failed", "cancelled"]
@@ -65,6 +66,13 @@ class JobRecord(BaseModel):
     plan_id: str | None = None
     has_plan_snapshot: bool = False
     planning_export_file: str | None = None
+    checkpoint_version: int = 0
+    node_states: dict[str, str] = Field(default_factory=dict)
+    current_node: str | None = None
+    print_files: dict[str, dict[str, str]] = Field(default_factory=dict)
+    parent_id: str | None = None
+    retry_job_id: str | None = None
+    attempt: int = 1
 
 
 class JobManager:
@@ -142,7 +150,7 @@ class JobManager:
 
     def _retain(self, job: JobRecord) -> bool:
         # 跨午夜执行的任务不能被裁掉；重启发现的中断任务至少展示到恢复当天结束。
-        return self._same_day(job.created_at) or job.status in {"queued", "running"} or (
+        return (job.checkpoint_version == 1 and job.status in {"failed", "partial"} and not job.retry_job_id) or self._same_day(job.created_at) or job.status in {"queued", "running"} or (
             any(event.stage == "interrupted" and self._same_day(event.at) for event in job.events)
         )
 
@@ -243,6 +251,8 @@ class JobManager:
             wave_nos=list(wave_nos or []),
             segments=deepcopy(segments or []),
             batch_id=batch_id, plan_id=plan_id, has_plan_snapshot=plan_snapshot is not None,
+            checkpoint_version=1 if mode in {"generate_waves", "print_waves"} else 0,
+            node_states={self.segment_key(s): "pending" for s in (segments or [])},
         )
         if plan_snapshot is not None:
             # 先保存不可变快照；任一步失败均不得启动生产任务。
@@ -259,6 +269,68 @@ class JobManager:
         self.tasks[job.id] = task
         task.add_done_callback(lambda finished: self._release_task(job.id, finished))
         return job
+
+    @staticmethod
+    def segment_key(segment: dict) -> str:
+        return json.dumps([segment["channel"], segment["seg_name"]], ensure_ascii=False)
+
+    def retry(self, job_id: str) -> JobRecord:
+        original = self.jobs.get(job_id)
+        if original is None:
+            raise ValueError("原任务不存在。")
+        # An interrupted HTTP response may be retried; never create two rounds.
+        if original.retry_job_id:
+            child = self.jobs.get(original.retry_job_id)
+            if child is None:
+                raise ValueError("该任务已有重试记录，但记录不可用，请勿重复执行。")
+            return child
+        if original.status not in {"failed", "partial"} or original.mode not in {"generate_waves", "print_waves"}:
+            raise ValueError("仅失败或部分完成的生成/打印任务可以重试；主动取消不续跑。")
+        if original.checkpoint_version != 1 or original.persistence_error:
+            raise ValueError("缺少可靠续跑记录或记录保存异常，请先核对，不能直接重试。")
+        if any(j.status in {"queued", "running"} for j in self.jobs.values()) or any(not t.done() for t in self.tasks.values()):
+            raise ActiveJobConflictError("任务或浏览器清理仍在运行，请稍后重试。")
+        snapshot = None
+        if original.mode == "generate_waves":
+            expected = {self.segment_key(s) for s in original.segments}
+            if set(original.node_states) != expected or any(v not in {"pending", "searching", "done"} for v in original.node_states.values()):
+                raise ValueError("存在已尝试提交但结果未确认的分段，方案 B 不会重复提交，请人工核对 WMS。")
+            confirmed = {self.segment_key(s) for s in (original.result or {}).get("segments", []) if s.get("wave_no")}
+            if confirmed != {k for k, v in original.node_states.items() if v == "done"}:
+                raise ValueError("已确认波次与续跑记录不一致，请人工核对。")
+            if not original.has_plan_snapshot:
+                raise ValueError("缺少原始计划快照，不能安全续跑。")
+            snapshot = read_plan(self.wave_records_dir, original.id, original.segments)
+            read_records(self.wave_records_dir)
+        child = original.model_copy(deep=True)
+        child.id = uuid4().hex
+        child.parent_id = original.id
+        child.retry_job_id = None
+        child.attempt += 1
+        child.created_at = child.updated_at = datetime.now().astimezone().isoformat()
+        child.status = "queued"
+        child.error = None
+        child.current_node = None
+        child.planning_export_file = None
+        child.events = [JobEvent(stage="queued", message=f"第 {child.attempt} 轮：按原任务输入续跑，保留已确认结果。")]
+        if child.mode == "generate_waves":
+            child.result = {"mode": child.mode, "segments": [s for s in (original.result or {}).get("segments", []) if s.get("wave_no")]}
+        else:
+            child.result = None  # Never advertise an earlier partial merge as this round's result.
+        if snapshot is not None:
+            save_plan(self.wave_records_dir, child.id, snapshot)
+        self.jobs[child.id] = child
+        original.retry_job_id = child.id
+        try:
+            self._persist(force=True)
+        except OSError:
+            original.retry_job_id = None
+            del self.jobs[child.id]
+            raise
+        task = asyncio.create_task(self._execute(child.id))
+        self.tasks[child.id] = task
+        task.add_done_callback(lambda finished: self._release_task(child.id, finished))
+        return child
 
     def _release_task(self, job_id: str, task: asyncio.Task[None]) -> None:
         # A terminal status alone is not enough: browser teardown and final
@@ -316,6 +388,24 @@ class JobManager:
             job.status = "running"
             job.updated_at = datetime.now().astimezone().isoformat()
             job.events.append(JobEvent(stage=stage, message=message))
+            if stage in {"segment_start", "wave_submitting", "print_checkpoint"}:
+                if stage == "segment_start":
+                    key = self.segment_key(json.loads(message))
+                    if key not in job.node_states:
+                        raise ValueError("分段检查点不属于原任务")
+                    job.current_node = key
+                    job.node_states[key] = "searching"
+                elif stage == "wave_submitting":
+                    if job.current_node is None:
+                        raise ValueError("提交缺少分段检查点")
+                    job.node_states[job.current_node] = "uncertain"
+                else:
+                    data = json.loads(message)
+                    if data["wave_no"] not in job.wave_nos:
+                        raise ValueError("打印检查点不属于原任务")
+                    job.print_files[data.pop("wave_no")] = data
+                if not self._save_job(job, force=True):
+                    raise CheckpointError("续跑检查点保存失败，停止操作。")
             # 生成波次逐段上报：立即持久化，保证中断时已完成分段的波次号不丢失
             if stage == "segment_wave" and job.mode == "generate_waves":
                 data = json.loads(message)
@@ -324,9 +414,13 @@ class JobManager:
                 if job.result is None:
                     job.result = {"mode": "generate_waves", "segments": []}
                 outcomes = job.result.setdefault("segments", [])
+                key = self.segment_key(data)
+                if key not in job.node_states or any(o.get("wave_no") == data["wave_no"] and self.segment_key(o) != key for o in outcomes):
+                    raise CheckpointError("确认波次与原分段不匹配或被多个分段共用，已停止，请核对。")
                 if not any(o.get("wave_no") == data["wave_no"] for o in outcomes):
                     outcomes.append(data)
                 job.result["generated_count"] = len(outcomes)
+                job.node_states[key] = "done"
                 # 先把业务事实存入任务；索引是派生记录，失败不能丢掉事实。
                 job_saved = self._save_job(job, force=True)
                 records_saved = self._save_wave_records(job)
@@ -341,12 +435,15 @@ class JobManager:
                 if job.mode == "generate_waves":
                     if not self.wave_generate_automation:
                         raise RuntimeError("生成波次自动化尚未配置。")
+                    remaining = [s for s in job.segments if job.node_states.get(self.segment_key(s)) != "done"]
                     result: WaveGenerateResult | WavePickResult | WavePrintResult | ExportResult = (
                         await self.wave_generate_automation.run(
                             progress,
                             headless=job.browser_mode == "headless",
-                            segments=job.segments,
+                            segments=remaining,
                         )
+                        if remaining else WaveGenerateResult(mode="generate_waves", current_url="", message="已确认节点全部保留。",
+                            completed_at=datetime.now().astimezone().isoformat(), segments=[], generated_count=0, failed_count=0)
                     )
                 elif job.mode == "pick_waves":
                     if not self.wave_pick_automation:
@@ -365,6 +462,7 @@ class JobManager:
                         progress,
                         wave_nos=job.wave_nos,
                         headless=job.browser_mode == "headless",
+                        **({"completed_files": job.print_files} if job.parent_id else {}),
                     )
                 else:
                     result = await self.export_automation.run(
@@ -376,6 +474,14 @@ class JobManager:
                     for key, value in asdict(result).items()
                     if value is not None
                 }
+                if job.mode == "generate_waves":
+                    combined = {self.segment_key(s): s for s in result_data.get("segments", [])}
+                    # Confirmed checkpoints take precedence over cleanup errors.
+                    combined.update({self.segment_key(s): s for s in (job.result or {}).get("segments", []) if s.get("wave_no")})
+                    result_data["segments"] = [combined.get(self.segment_key(s), {"channel": s["channel"], "seg_name": s["seg_name"], "wave_no": None}) for s in job.segments]
+                    result_data["generated_count"] = sum(bool(s.get("wave_no")) for s in result_data["segments"])
+                    result_data["failed_count"] = len(job.segments) - result_data["generated_count"]
+                    result_data["message"] = f"累计完成 {result_data['generated_count']}/{len(job.segments)} 个分段。"
             job.status = "partial" if (result_data.get("failed_wave_nos") or result_data.get("failed_count")) else "succeeded"
             job.result = result_data
             for warning in result_data.get("warnings", []):

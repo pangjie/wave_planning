@@ -252,7 +252,7 @@ async def test_failed_checkpoint_keeps_confirmed_wave_and_stops_next_segment(iso
         raise AssertionError("Should stop before the next segment")
 
     manager = JobManager(unused_automation(), wave_generate_automation=SimpleNamespace(run=generate), settings=isolated_runtime)
-    job = manager.create("generate_waves")
+    job = manager.create("generate_waves", segments=[{"channel":"CBT", "seg_name":"单件1", "order_nos":["O1","O2"]}])
     await manager.tasks[job.id]
     assert not reached_next
     assert job.status == "failed"
@@ -280,7 +280,7 @@ async def test_confirmed_checkpoint_is_not_throttled_and_survives_cancellation(i
         await asyncio.Event().wait()
 
     manager = JobManager(unused_automation(), wave_generate_automation=SimpleNamespace(run=generate), settings=isolated_runtime)
-    job = manager.create("generate_waves")
+    job = manager.create("generate_waves", segments=[{"channel":"CBT", "seg_name":"单件1", "order_nos":["O1","O2"]}])
     await asyncio.wait_for(entered.wait(), 1)
     persisted = json.loads(records_file(isolated_runtime).read_text())[0]
     assert persisted["result"]["segments"] == [CONFIRMED]

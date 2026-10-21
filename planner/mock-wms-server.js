@@ -5,7 +5,7 @@
 const fs = require('fs');
 const http = require('http');
 
-function createMockServer({ samplePath, htmlSource, waveRecords = [] }) {
+function createMockServer({ samplePath, htmlSource, waveRecords = [], retryHandler = null }) {
   const timers = new Set();
   const later = (fn, ms) => {
     const timer = setTimeout(() => { timers.delete(timer); fn(); }, ms);
@@ -77,6 +77,13 @@ function createMockServer({ samplePath, htmlSource, waveRecords = [] }) {
       }
 
       if (p === '/api/health') return json(res, 200, { status: 'ok' });
+      const retryRoute = p.match(/^\/api\/jobs\/([^/]+)\/retry$/);
+      if (retryRoute && req.method === 'POST' && retryHandler) {
+        const body = await readBody(req);
+        const result = await retryHandler(jobs.get(retryRoute[1]), body);
+        jobs.set(result.id, result);
+        return json(res, 202, result);
+      }
 
       if (p === '/api/wave-records' && req.method === 'GET') {
         return json(res, 200, url.searchParams.has('batch_id') ? waveRecords.filter(r =>

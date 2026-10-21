@@ -56,8 +56,10 @@
           <button class="bb wms-mode" id="wmsPick" data-mode="pick_waves" title="选中后点击下方「开始任务」：批量拣货，下方留空=全部待拣货波次，或每行一个波次号">批量拣货</button>
         </div>
         <label class="wave-input-label" for="wmsWaves">波次号清单</label>
-        <textarea id="wmsWaves" rows="4" spellcheck="false" placeholder="每行一个波次号&#10;批量拣货留空=全部待拣货"></textarea>
+        <textarea id="wmsWaves" rows="4" spellcheck="false" placeholder="每行一个波次号&#10;打印留空=当前规划已生成的单件、混件&#10;批量拣货留空=全部待拣货"></textarea>
         <button class="bb run" id="wmsRun" disabled title="选中上方任一功能后点击开始；任务运行中点击可终止">开始任务</button>
+        <button class="bb" id="wmsNewTask" hidden title="放弃当前重试入口，使用新的输入开始任务">新建任务</button>
+        <span id="wmsRetryProgress" hidden></span>
         <div class="wms-log" id="wmsLog" aria-live="polite"></div>
       </div>
       <div class="side-spacer"></div>

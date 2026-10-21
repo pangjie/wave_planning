@@ -150,6 +150,113 @@ function singleRows(count, prefix = 'ORDER') {
   return Array.from({ length: count }, (_, i) => [`${prefix}${i + 1}`, '单品单件', 'CBT', '', 'SKU-AUDIT', 1]);
 }
 
+function printPlan(h) {
+  const rows=singleRows(12,'HOT');
+  rows.push(['P','单品单件','CBT','','P',1],['M','单品多件','CBT','','M',2],['X','多品混合','CBT','','X',3],
+    ['BP','单品单件','CBS','','BP',1],['BX','多品混合','CBS','','BX',2]);
+  h.importRows(rows);
+  h.api.state.modes.normal.order={sortMode:'fixed',custom:true,list:['CBS','CBT']};
+  h.audit.identity();
+  for(const ch of h.api.curAnalysis().channels) for(const seg of ch.segments) h.api.state.waveNos.set(ch.id+'|'+seg.name,'W_'+ch.id+'_'+seg.kind);
+}
+
+test('Blank print: selected confirmed paper/mix only, wave-table order, unchanged input and locked request', async t=>{
+  const h=harness(t); printPlan(h); await drainMicrotasks();
+  h.core.document.getElementById('wmsWaves').value=' \n\t';
+  const pending=deferred(); let sent;
+  h.route(r=>{if(r.url==='/api/jobs'&&r.method==='POST'){sent=JSON.parse(r.options.body);return pending.promise;}});
+  const submission=h.api.wmsSubmit('print_waves');
+  assert.deepEqual(sent.wave_nos,['W_CBS_paper','W_CBS_mix','W_CBT_paper','W_CBT_mix']);
+  const table=h.audit.exportData().sheets.find(s=>s.name==='波次表');
+  assert.deepEqual(Array.from(table.aoa.filter(r=>['单件paper','混件paper'].includes(r[3])),r=>r[2]),sent.wave_nos);
+  h.importRows(singleRows(25,'NEW')); await drainMicrotasks();
+  assert.deepEqual(sent.wave_nos,['W_CBS_paper','W_CBS_mix','W_CBT_paper','W_CBT_mix']);
+  pending.resolve(response({...runningJob('automatic-print','print_waves'),wave_nos:sent.wave_nos})); await submission;
+  assert.equal(h.elements.get('wmsWaves').value,' \n\t');
+  assert.ok(h.logs.some(l=>l.text.includes('自动取自当前规划')&&l.text.includes('4 个')));
+});
+
+test('Blank print: disabled segments, unconfirmed waves and duplicates excluded',async t=>{
+  const h=harness(t); printPlan(h); await drainMicrotasks();
+  const m=h.api.state.modes.normal;
+  m.sel.segs.delete('CBS|混件1');
+  h.audit.identity();
+  const segments=h.audit.effectiveSegments();
+  for(const s of segments) h.api.state.waveNos.set(s.channel+'|'+s.seg_name,'SAME');
+  h.api.state.waveNos.delete('CBT|单件paper-1');
+  let sent;
+  h.route(r=>{if(r.url==='/api/jobs'&&r.method==='POST'){sent=JSON.parse(r.options.body);return Promise.resolve(response(runningJob('p','print_waves')));}});
+  await h.api.wmsSubmit('print_waves');
+  assert.deepEqual(sent.wave_nos,['SAME']);
+});
+
+test('Blank print: closed channel excluded even when it has a wave number',async t=>{
+  const h=harness(t); printPlan(h); await drainMicrotasks();
+  h.api.state.modes.normal.sel.channels.delete('CBS');
+  h.audit.identity();
+  for(const ch of h.api.curAnalysis().channels) for(const seg of ch.segments) h.api.state.waveNos.set(ch.id+'|'+seg.name,'W_'+ch.id+'_'+seg.kind);
+  let sent;
+  h.route(r=>{if(r.url==='/api/jobs'&&r.method==='POST'){sent=JSON.parse(r.options.body);return Promise.resolve(response(runningJob('p','print_waves')));}});
+  await h.api.wmsSubmit('print_waves');
+  assert.deepEqual(sent.wave_nos,['W_CBT_paper','W_CBT_mix']);
+});
+
+for(const input of ['', ' \n ', 'bad/no']) test('Print without eligible plan must not submit: '+JSON.stringify(input),async t=>{
+  const h=harness(t);
+  h.core.document.getElementById('wmsWaves').value=input;
+  await h.api.wmsSubmit('print_waves');
+  assert.equal(h.requests.filter(r=>r.method==='POST'&&r.url==='/api/jobs').length,0);
+});
+
+test('Manual print retains explicit order and never supplements from current plan',async t=>{
+  const h=harness(t); printPlan(h); await drainMicrotasks();
+  h.core.document.getElementById('wmsWaves').value='W_OTHER\nW_CBT_paper\nW_OTHER';
+  let sent;
+  h.route(r=>{if(r.url==='/api/jobs'&&r.method==='POST'){sent=JSON.parse(r.options.body);return Promise.resolve(response(runningJob('p','print_waves')));}});
+  await h.api.wmsSubmit('print_waves');
+  assert.deepEqual(sent.wave_nos,['W_OTHER','W_CBT_paper']);
+});
+
+test('Retry: uses failed job identity, ignores changed page inputs, coalesces clicks and restores button', async t => {
+  const h = harness(t);
+  h.importRows(singleRows(25));
+  await drainMicrotasks();
+  const original = bindJob(h, generatedJob('retry-origin'));
+  Object.assign(original,{status:'failed',checkpoint_version:1,attempt:1});
+  const child = {...original,id:'retry-child',status:'running',attempt:2,parent_id:original.id,result:null};
+  h.api.wms.latestJobs.set('generate_waves',original);
+  h.api.wms.mode='generate_waves';
+  h.importRows(singleRows(30,'NEW'));
+  await drainMicrotasks();
+  const pending=deferred();
+  h.route(r=>{
+    if(r.url==='/api/jobs/retry-origin/retry') return pending.promise;
+    if(r.url==='/api/jobs/retry-child/plan') return Promise.resolve(response(h.api.wms.planSnapshots.get(original.id)));
+    if(r.url==='/api/jobs/retry-child') return Promise.resolve(response({...child,status:'failed',events:[]}));
+  });
+  const first=h.api.wmsRetry();
+  await h.api.wmsRetry();
+  assert.equal(h.requests.filter(r=>r.url.endsWith('/retry')).length,1);
+  assert.deepEqual(JSON.parse(h.requests.find(r=>r.url.endsWith('/retry')).options.body),{confirm_production:true});
+  pending.resolve(response(child)); await first;
+  assert.equal(h.elements.get('wmsRun').textContent,'取消任务');
+  await h.api.wmsPollOnce();
+  assert.equal(h.elements.get('wmsRun').textContent,'重试任务');
+  assert.equal(h.api.wms.latestJobs.get('generate_waves').id,child.id);
+  assert.equal(h.requests.filter(r=>r.url==='/api/jobs' && r.method==='POST').length,0);
+});
+
+test('Retry: refused uncertain generation leaves original retry target and never creates new task', async t => {
+  const h=harness(t);
+  h.api.wms.mode='generate_waves';
+  h.api.wms.latestJobs.set('generate_waves',{id:'unknown',mode:'generate_waves',status:'failed',checkpoint_version:1,segments:[]});
+  h.route(r=>r.url==='/api/jobs/unknown/retry' ? Promise.resolve(response({detail:'提交结果未确认，请核对'},409)) : undefined);
+  await h.api.wmsRetry();
+  assert.equal(h.api.wms.active,false);
+  assert.equal(h.elements.get('wmsRun').textContent,'重试任务');
+  assert.equal(h.api.wms.latestJobs.get('generate_waves').id,'unknown');
+});
+
 test('USPS subdivision: default, toggle, absorption and distinct wave identities with USPS-only export labels', async t => {
   const h = harness(t);
   const pic = stc => { const s = '92'+stc+'0'.repeat(16); let sum=0; for(let i=s.length-1,w=3;i>=0;i--,w=4-w) sum+=Number(s[i])*w; return s+((10-sum%10)%10); };
