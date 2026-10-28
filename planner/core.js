@@ -904,7 +904,7 @@ function sheetWaveTable(blocks, waveNos) {
   blocks.forEach(function (b, bi) {
     b.segs.forEach(function (seg) {
       var r = aoa.length;
-      waveRefs.push({ channel: b.ch.id, seg_name: seg.name, row: r });
+      waveRefs.push({ channel: b.ch.id, seg_name: seg.name, row: r, kind: seg.kind });
       var waveNo = waveNos ? (waveNos.get(b.ch.id + '|' + seg.name) || '') : '';
       aoa.push([
         (/^USPS-[HG]$/.test(b.ch.id) ? 'USPS' : b.ch.name) + KIND_SHORT[seg.kind], '', waveNo, KIND_TYPE[seg.kind], '',

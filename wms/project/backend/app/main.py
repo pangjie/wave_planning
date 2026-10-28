@@ -19,9 +19,13 @@ from app.automation import (
 from app.core.config import get_settings
 from app.core.runtime_lock import exclusive_runtime
 from app.services.job_manager import JobManager
+from app.services.cutoff_schedule import CutoffScheduler
 
 
-async def _stop_jobs(manager: JobManager) -> None:
+async def _stop_jobs(manager: JobManager, scheduler: CutoffScheduler | None = None) -> None:
+    manager.closing = True
+    if scheduler:
+        await scheduler.stop()
     # cancel() also saves jobs cancelled before their executor's first turn.
     results = await asyncio.gather(
         *(manager.cancel(job_id) for job_id, task in list(manager.tasks.items()) if not task.done()),
@@ -51,10 +55,14 @@ async def lifespan(app: FastAPI):
             settings=settings,
         )
         app.state.job_manager = manager
+        manager.dispatch_follow_print()
+        scheduler = CutoffScheduler(manager, settings.downloads_dir)
+        app.state.cutoff_scheduler = scheduler
+        scheduler.start()
         try:
             yield
         finally:
-            shutdown = asyncio.create_task(_stop_jobs(manager))
+            shutdown = asyncio.create_task(_stop_jobs(manager, scheduler))
             interrupted = False
             while not shutdown.done():
                 try:

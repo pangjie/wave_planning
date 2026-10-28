@@ -31,17 +31,18 @@ mock.jobs.set(root.id,root);
         await d.evalJs('new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(true))))');
         T.assert(await d.evalJs(`(()=>{
           const progress=document.getElementById('wmsRetryProgress'),log=document.getElementById('wmsLog');
-          const section=document.getElementById('wmsSection').getBoundingClientRect(),p=progress.getBoundingClientRect();
-          log.textContent='短日志';
+          const section=document.getElementById('wmsPanel').getBoundingClientRect(),p=progress.getBoundingClientRect();
+          const content=document.createElement('div');log.appendChild(content);content.textContent='短日志';
           const shortHeight=log.offsetHeight;
-          log.textContent=('测试日志\\n').repeat(300);
+          content.textContent=('测试日志\\n').repeat(300);
           const before=log.getBoundingClientRect();
           log.scrollTop=log.scrollHeight;
-          return getComputedStyle(progress).textAlign==='center' && p.width>0 &&
+          const valid=getComputedStyle(progress).textAlign==='center' && p.width>0 &&
             Math.abs(p.left+p.width/2-section.left-section.width/2)<1 &&
             log.offsetHeight>=160 && log.offsetHeight===shortHeight && log.scrollHeight>log.clientHeight && log.scrollTop>0 &&
             (innerWidth>900 || log.offsetHeight<=320) &&
             before.right<=innerWidth && before.height===log.getBoundingClientRect().height;
+          content.remove();log.scrollTop=0;return valid;
         })()`),'轮次居中、日志扩高且内部滚动，无横向溢出：'+width+'×'+height);
         logHeights.push(await d.evalJs(`document.getElementById('wmsLog').offsetHeight`));
         if(width>900 && height>=1100) T.assert(await d.evalJs(`(()=>{const side=document.querySelector('.side');return side.scrollHeight<=side.clientHeight+1;})()`),'高屏幕侧栏无需额外滚动');

@@ -5,7 +5,7 @@
 const fs = require('fs');
 const http = require('http');
 
-function createMockServer({ samplePath, htmlSource, waveRecords = [], retryHandler = null }) {
+function createMockServer({ samplePath, htmlSource, waveRecords = [], retryHandler = null, schedule = null }) {
   const timers = new Set();
   const later = (fn, ms) => {
     const timer = setTimeout(() => { timers.delete(timer); fn(); }, ms);
@@ -77,6 +77,15 @@ function createMockServer({ samplePath, htmlSource, waveRecords = [], retryHandl
       }
 
       if (p === '/api/health') return json(res, 200, { status: 'ok' });
+      if (schedule && p === '/api/schedule') {
+        if(req.method === 'PUT') {schedule.config = await readBody(req);requests.push({mode:'schedule',...schedule.config});}
+        return json(res,200,schedule);
+      }
+      if(schedule && /^\/api\/schedule\/runs\/[^/]+\/file$/.test(p)) {
+        requests.push({mode:'cutoff_file'});
+        res.writeHead(200,{'Content-Type':'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
+        return res.end(fs.readFileSync(samplePath));
+      }
       const retryRoute = p.match(/^\/api\/jobs\/([^/]+)\/retry$/);
       if (retryRoute && req.method === 'POST' && retryHandler) {
         const body = await readBody(req);
@@ -144,6 +153,13 @@ function createMockServer({ samplePath, htmlSource, waveRecords = [], retryHandl
         const name = '波次规划-' + job.id + '.xlsx';
         if (!exports.has(name)) exports.set(name, bytes);
         job.planning_export_file = name;
+        if(job.follow_print && job.status==='succeeded' && !job.follow_print_job_id){
+          const refs=plans.get(job.id).snapshot.workbook.sheets.find(s=>s.name==='波次表').waveRefs;
+          const waves=refs.filter(r=>['paper','mix'].includes(r.kind)).sort((a,b)=>a.row-b.row).map(r=>job.result.segments.find(s=>s.channel===r.channel&&s.seg_name===r.seg_name).wave_no);
+          const child=mkJob('print_waves',job.browser_mode,waves);
+          child.generation_job_id=job.id;job.follow_print_job_id=child.id;job.follow_print_state='started';
+          later(()=>{child.status='succeeded';child.result={wave_nos:waves,merged_file:'outputs/follow.pdf'};},500);
+        }
         return json(res, 200, { file: name, url: '/api/exports/' + encodeURIComponent(name) });
       }
       if (p === '/api/jobs' && req.method === 'POST') {
@@ -159,6 +175,8 @@ function createMockServer({ samplePath, htmlSource, waveRecords = [], retryHandl
         }
         const job = mkJob(body.mode, body.browser_mode || 'headed', waves);
         job.segments = body.segments || [];
+        job.follow_print=!!body.follow_print;
+        job.follow_print_state=job.follow_print?'waiting_generation':'off';
         job.batch_id = body.batch_id;
         job.plan_id = body.plan_id;
         job.has_plan_snapshot = !!body.plan_snapshot;

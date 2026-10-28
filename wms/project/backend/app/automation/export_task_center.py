@@ -54,22 +54,31 @@ class ExportTaskCenter:
         page: Page,
         before_keys: set[str],
         progress: ProgressCallback,
+        *,
+        detected_key: str | None = None,
+        checkpoint: bool = False,
     ) -> TaskCenterItem:
         """Poll until the newly-created parcel export is ready to download."""
         timeouts = self.config.timeouts_ms
         started = time.monotonic()
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeouts.task_completion / 1000
-        detected_key: str | None = None
         reported_status: str | None = None
 
         while loop.time() < deadline:
             await self._open(page)
             tasks = await self._read_items(page)
+            if checkpoint and not detected_key:
+                candidates = [item for item in tasks if item.key not in before_keys and item.filename.startswith(self.config.task_filename_prefix)]
+                if len(candidates) > 1:
+                    raise AutomationError("出现多个新导出任务，无法确认本次任务身份；未下载或重新提交，请人工核对。")
             candidate = self._select_export_task(tasks, before_keys, detected_key)
 
             if candidate:
                 if detected_key is None:
+                    if checkpoint:
+                        import json
+                        await progress("export_checkpoint", json.dumps({"submitted": True, "task_key": candidate.key}))
                     await progress(
                         "task_detected",
                         f"已识别本次导出任务：{candidate.filename}",

@@ -73,6 +73,15 @@ class JobRecord(BaseModel):
     parent_id: str | None = None
     retry_job_id: str | None = None
     attempt: int = 1
+    schedule_run_id: str | None = None
+    schedule_stage: str | None = None
+    created_range: dict[str, str] | None = None
+    export_checkpoint: dict = Field(default_factory=dict)
+    follow_print: bool = False
+    follow_print_state: str = "off"
+    follow_print_job_id: str | None = None
+    follow_print_error: str | None = None
+    generation_job_id: str | None = None
 
 
 class JobManager:
@@ -104,6 +113,8 @@ class JobManager:
         self.tasks: dict[str, asyncio.Task[None]] = {}
         self._load_persisted()
         self._run_lock = asyncio.Lock()
+        self.closing = False
+        self.outputs_dir = settings.outputs_dir if settings else self.wave_records_dir.parent / "outputs"
 
     @staticmethod
     def _same_day(created_at: str) -> bool:
@@ -149,6 +160,10 @@ class JobManager:
             self._persist(force=True)
 
     def _retain(self, job: JobRecord) -> bool:
+        if job.follow_print or job.generation_job_id:
+            return True
+        if job.schedule_run_id:
+            return True
         # 跨午夜执行的任务不能被裁掉；重启发现的中断任务至少展示到恢复当天结束。
         return (job.checkpoint_version == 1 and job.status in {"failed", "partial"} and not job.retry_job_id) or self._same_day(job.created_at) or job.status in {"queued", "running"} or (
             any(event.stage == "interrupted" and self._same_day(event.at) for event in job.events)
@@ -228,12 +243,18 @@ class JobManager:
         batch_id: str | None = None,
         plan_id: str | None = None,
         plan_snapshot: dict | None = None,
+        schedule_run_id: str | None = None,
+        schedule_stage: str | None = None,
+        created_range: dict[str, str] | None = None,
+        export_checkpoint: dict | None = None,
+        follow_print: bool = False,
+        generation_job_id: str | None = None,
     ) -> JobRecord:
         active_job = next(
             (job for job in self.jobs.values() if job.status in {"queued", "running"}),
             None,
         )
-        if active_job:
+        if active_job or self._run_lock.locked() or any(not task.done() for task in self.tasks.values()):
             raise ActiveJobConflictError(
                 "已有任务正在排队或执行，请等待当前任务结束后再提交。"
             )
@@ -244,6 +265,12 @@ class JobManager:
             if mode != "generate_waves" or not batch_id or not plan_id or plan_snapshot is None:
                 raise ValueError("计划身份与快照必须一起提交，且仅用于生成波次")
             validate_plan(plan_snapshot, segments or [])
+        if follow_print:
+            if mode != "generate_waves" or plan_snapshot is None:
+                raise ValueError("跟随打印需要生成任务的完整快照")
+            refs = next(s for s in plan_snapshot["workbook"]["sheets"] if s["name"] == "波次表")["waveRefs"]
+            if any(r.get("kind") not in {"paper", "mix", "hot", "multi"} for r in refs):
+                raise ValueError("跟随打印缺少明确分类")
         job = JobRecord(
             id=uuid4().hex,
             mode=mode,
@@ -253,17 +280,31 @@ class JobManager:
             batch_id=batch_id, plan_id=plan_id, has_plan_snapshot=plan_snapshot is not None,
             checkpoint_version=1 if mode in {"generate_waves", "print_waves"} else 0,
             node_states={self.segment_key(s): "pending" for s in (segments or [])},
+            schedule_run_id=schedule_run_id, schedule_stage=schedule_stage,
+            created_range=deepcopy(created_range), export_checkpoint=deepcopy(export_checkpoint or {}),
+            follow_print=follow_print, follow_print_state="waiting_generation" if follow_print else "off",
+            generation_job_id=generation_job_id,
         )
         if plan_snapshot is not None:
             # 先保存不可变快照；任一步失败均不得启动生产任务。
             save_plan(self.wave_records_dir, job.id, plan_snapshot)
         job.events.append(JobEvent(stage="queued", message="任务已进入队列。"))
         self.jobs[job.id] = job
+        generation = self.jobs.get(generation_job_id or "")
+        if generation_job_id and (not generation or generation.follow_print_state != "pending" or generation.follow_print_job_id):
+            del self.jobs[job.id]
+            raise ValueError("跟随打印关联状态已改变，未重复启动")
+        if generation:
+            generation.follow_print_job_id = job.id
+            generation.follow_print_state = "started"
         try:
             # 必须先成功保存接受的请求，再安排生产执行；不能被日志节流跳过。
             self._persist(force=True)
         except OSError:
             del self.jobs[job.id]
+            if generation:
+                generation.follow_print_job_id = None
+                generation.follow_print_state = "pending"
             raise
         task = asyncio.create_task(self._execute(job.id))
         self.tasks[job.id] = task
@@ -312,6 +353,10 @@ class JobManager:
         child.error = None
         child.current_node = None
         child.planning_export_file = None
+        if child.follow_print:
+            child.follow_print_job_id = None
+            child.follow_print_state = "cancelled" if original.follow_print_state == "cancelled" else "waiting_generation"
+            child.follow_print_error = None
         child.events = [JobEvent(stage="queued", message=f"第 {child.attempt} 轮：按原任务输入续跑，保留已确认结果。")]
         if child.mode == "generate_waves":
             child.result = {"mode": child.mode, "segments": [s for s in (original.result or {}).get("segments", []) if s.get("wave_no")]}
@@ -344,6 +389,87 @@ class JobManager:
                     "后台任务 %s 意外退出", job_id,
                     exc_info=(type(error), error, error.__traceback__),
                 )
+        self.dispatch_follow_print()
+
+    def cancel_follow_print(self, job_id: str) -> None:
+        job = self.jobs.get(job_id)
+        if not job or not job.follow_print:
+            raise ValueError("不存在跟随打印设置")
+        if job.follow_print_job_id:
+            raise ValueError("打印任务已经创建，请取消正在执行的打印任务")
+        previous = job.follow_print_state
+        job.follow_print_state = "cancelled"
+        try:
+            self._persist(force=True)
+        except OSError:
+            job.follow_print_state = previous
+            raise
+
+    def arm_follow_print(self, job_id: str) -> None:
+        job = self.jobs[job_id]
+        if not job.follow_print or job.status != "succeeded" or not job.planning_export_file or job.retry_job_id:
+            return
+        if job.follow_print_state not in {"waiting_generation", "waiting_file", "pending"}:
+            return
+        job.follow_print_state = "pending"
+        self._persist(force=True)
+        self.dispatch_follow_print()
+
+    def _follow_waves(self, job: JobRecord) -> list[str]:
+        """Use typed original row refs, never names or current UI selection."""
+        from openpyxl import load_workbook
+        if job.persistence_error:
+            raise ValueError("生成记录保存异常，请人工核对")
+        plan = read_plan(self.wave_records_dir, job.id, job.segments)
+        table = next(s for s in plan["workbook"]["sheets"] if s["name"] == "波次表")
+        outcomes = (job.result or {}).get("segments", [])
+        by_key = {self.segment_key(s): s.get("wave_no") for s in outcomes}
+        expected = {self.segment_key(s) for s in job.segments}
+        if set(by_key) != expected or len(outcomes) != len(expected) or any(not by_key[k] or job.node_states.get(k) != "done" for k in expected):
+            raise ValueError("生成结果尚未全部确认，不能跟随打印")
+        if len(set(by_key.values())) != len(expected):
+            raise ValueError("波次号重复，不能跟随打印")
+        path = self.outputs_dir / job.planning_export_file
+        book = load_workbook(path, read_only=True, data_only=True)
+        waves = []
+        try:
+            sheet = book["波次表"]
+            rows = list(sheet.values)
+            for ref in sorted(table["waveRefs"], key=lambda r: r["row"]):
+                wave = by_key[self.segment_key(ref)]
+                if ref.get("kind") not in {"paper", "mix", "hot", "multi"}:
+                    raise ValueError("快照缺少明确分类")
+                if ref["row"] >= len(rows) or len(rows[ref["row"]]) < 7 or rows[ref["row"]][2] != wave or rows[ref["row"]][6] != table["aoa"][ref["row"]][6]:
+                    raise ValueError("已保存规划文件与确认波次不一致")
+                if ref["kind"] in {"paper", "mix"}:
+                    waves.append(wave)
+        finally:
+            book.close()
+        return waves
+
+    def dispatch_follow_print(self) -> None:
+        if self.closing or self._run_lock.locked() or any(not t.done() for t in self.tasks.values()) or any(j.status in {"queued", "running"} for j in self.jobs.values()):
+            return
+        for job in list(self.jobs.values()):
+            if not job.follow_print or job.status != "succeeded" or not job.planning_export_file or job.retry_job_id or job.follow_print_job_id:
+                continue
+            if job.follow_print_state not in {"waiting_generation", "waiting_file", "pending"}:
+                continue
+            try:
+                waves = self._follow_waves(job)
+                if not waves:
+                    job.follow_print_state = "skipped"
+                    job.events.append(JobEvent(stage="follow_print", message="本次没有单件或混件波次，已跳过跟随打印。"))
+                    self._persist(force=True)
+                    continue
+                job.follow_print_state = "pending"
+                # Parent link and child are persisted together by create(), before execution.
+                self.create("print_waves", job.browser_mode, wave_nos=waves, generation_job_id=job.id)
+                return
+            except Exception as exc:
+                job.follow_print_state = "blocked"
+                job.follow_print_error = str(exc)
+                self._save_job(job, force=True)
 
     def get(self, job_id: str) -> JobRecord | None:
         return self.jobs.get(job_id)
@@ -388,6 +514,13 @@ class JobManager:
             job.status = "running"
             job.updated_at = datetime.now().astimezone().isoformat()
             job.events.append(JobEvent(stage=stage, message=message))
+            if stage == "export_checkpoint":
+                job.export_checkpoint.update(json.loads(message))
+                try:
+                    self._persist(force=True)
+                except OSError as exc:
+                    raise CheckpointError("导出检查点未保存，已停止执行。") from exc
+                return
             if stage in {"segment_start", "wave_submitting", "print_checkpoint"}:
                 if stage == "segment_start":
                     key = self.segment_key(json.loads(message))
@@ -468,6 +601,7 @@ class JobManager:
                     result = await self.export_automation.run(
                         progress,
                         headless=job.browser_mode == "headless",
+                        **({"created_range": job.created_range, "checkpoint": job.export_checkpoint} if job.schedule_run_id else {}),
                     )
                 result_data = {
                     key: value
@@ -506,4 +640,6 @@ class JobManager:
             # 保存/索引异常只附警告，不能覆盖已确认的业务结果，也不能再次抛错丢失终态。
             if job.mode == "generate_waves" and job.result:
                 self._save_wave_records(job)
+            if job.follow_print and job.status == "succeeded" and job.follow_print_state == "waiting_generation":
+                job.follow_print_state = "waiting_file"
             self._save_job(job, force=True)

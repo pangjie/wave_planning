@@ -13,6 +13,8 @@
   <header class="app-header">
     <div class="brand"><strong>波次规划工具</strong></div>
     <div class="header-actions">
+      <button class="bb logs" id="btnLogDetails" aria-expanded="false" aria-controls="logDetailsPanel" title="查看完整任务日志">日志详情</button>
+      <button class="bb schedule" id="btnSchedule" aria-expanded="false" aria-controls="schedulePanel" title="定时任务：未启用"><span class="schedule-indicator" aria-hidden="true"></span>定时任务</button>
       <button class="bb import" id="btnImport" title="导入订单 Excel">导入订单</button>
       <button class="bb export" id="btnExport" title="导出 Excel" disabled>导出方案</button>
       <span class="cfg-wrap">
@@ -51,7 +53,10 @@
         </div>
         <div class="wms-mode-grid">
           <button class="bb wms-mode" id="wmsExport" data-mode="export" title="选中后点击下方「开始任务」：在 WMS 中提交一次正式订单导出并自动导入全量订单分析">全量分析</button>
-          <button class="bb wms-mode" id="wmsGenerate" data-mode="generate_waves" title="选中后点击下方「开始任务」：按网页勾选的分段顺序逐段生成波次并回填波次号">生成波次</button>
+          <div class="wms-generate-wrap">
+            <button class="bb wms-mode" id="wmsGenerate" data-mode="generate_waves" title="选中后点击下方「开始任务」：按网页勾选的分段顺序逐段生成波次并回填波次号">生成波次</button>
+            <button class="bb follow-print-toggle" id="wmsFollowPrint" aria-label="跟随打印单件和混件" aria-pressed="false" title="跟随打印已关闭"><svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path d="M6 8V3h12v5M6 17H3V9h18v8h-3M6 14h12v7H6z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg></button>
+          </div>
           <button class="bb wms-mode" id="wmsPrint" data-mode="print_waves" title="选中后点击下方「开始任务」：按下方波次号生成拣货单 PDF 并合并">打印波次</button>
           <button class="bb wms-mode" id="wmsPick" data-mode="pick_waves" title="选中后点击下方「开始任务」：批量拣货，下方留空=全部待拣货波次，或每行一个波次号">批量拣货</button>
         </div>
@@ -59,8 +64,12 @@
         <textarea id="wmsWaves" rows="4" spellcheck="false" placeholder="每行一个波次号&#10;打印留空=当前规划已生成的单件、混件&#10;批量拣货留空=全部待拣货"></textarea>
         <button class="bb run" id="wmsRun" disabled title="选中上方任一功能后点击开始；任务运行中点击可终止">开始任务</button>
         <button class="bb" id="wmsNewTask" hidden title="放弃当前重试入口，使用新的输入开始任务">新建任务</button>
-        <span id="wmsRetryProgress" hidden></span>
-        <div class="wms-log" id="wmsLog" aria-live="polite"></div>
+        <div class="wms-log" id="wmsLog" aria-live="polite">
+          <div class="wms-panel" id="wmsPanel" hidden>
+            <div class="wms-panel-bar"><span class="wms-state" id="wmsState">空闲</span><span class="wms-msg" id="wmsMsg"></span></div>
+            <span id="wmsRetryProgress" hidden></span>
+          </div>
+        </div>
       </div>
       <div class="side-spacer"></div>
       <div class="side-row side-status" aria-live="polite">
@@ -69,15 +78,28 @@
       </div>
     </aside>
     <main class="term">
+      <section id="logDetailsPanel" class="schedule-panel" hidden>
+        <h2>日志详情</h2>
+        <p id="logDetailsStatus" role="status">按任务展示完整过程；执行中的记录自动更新。</p>
+        <div id="logDetailsContent"></div>
+      </section>
+      <section id="schedulePanel" class="schedule-panel" hidden>
+        <h2>定时截单</h2>
+        <p class="dim">每天执行一次，合并截单时刻往前一周的待处理订单。文件就绪后，在日志中点击加载分析。</p>
+        <form id="scheduleForm" class="schedule-form">
+          <label class="schedule-switch"><input type="checkbox" id="scheduleEnabled">启用每日截单</label>
+          <label>截单时间<input type="time" id="scheduleTime" value="07:00" required></label>
+          <label>提前导出（分钟）<input type="number" id="scheduleAdvance" value="30" min="1" max="720" required></label>
+          <label>时区（须与 WMS 页面一致）<input id="scheduleTimezone" value="America/New_York" required list="scheduleZones"></label>
+          <datalist id="scheduleZones"><option value="America/New_York"><option value="America/Los_Angeles"><option value="Asia/Shanghai"><option value="UTC"></datalist>
+          <button class="bb" id="scheduleSave" type="submit" disabled>保存配置</button>
+        </form>
+        <p id="scheduleMessage" role="status">正在连接本地服务…</p>
+        <p class="dim">首次保存从下一个完整的预导出时段开始。停用只停止后续计划，已开始的本次执行继续完成。Mac 需保持唤醒、服务运行和 WMS 登录有效；不自动唤醒。</p>
+        <div id="scheduleRuns"></div>
+      </section>
       <div class="out" id="out">
         <div id="dash"></div>
-      </div>
-      <div class="wms-panel" id="wmsPanel" hidden>
-        <div class="wms-panel-bar">
-          <span class="wms-state" id="wmsState">空闲</span>
-          <span class="wms-msg" id="wmsMsg"></span>
-          <span class="spacer"></span>
-        </div>
       </div>
     </main>
   </div>

@@ -41,6 +41,8 @@ def validate_plan(snapshot: dict, segments: list[dict[str, object]]) -> None:
         if key not in expected or key in seen or type(row) is not int or row in rows or not 0 < row < len(table["aoa"]):
             raise ValueError("计划快照分段或行引用不匹配")
         cells = table["aoa"][row]
+        if "kind" in ref and ref["kind"] not in {"hot", "paper", "multi", "mix"}:
+            raise ValueError("计划快照分类无效")
         if not isinstance(cells, list) or len(cells) < 9 or cells[6] != expected[key]:
             raise ValueError("计划快照订单数量不匹配")
         seen.add(key)

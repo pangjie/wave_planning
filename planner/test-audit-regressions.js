@@ -103,7 +103,7 @@ function harness(t) {
   // hooks stay unchanged; boot-time DOM bindings and visual redraws are stubbed.
   const instrumented = appSource.replace(initMarker, `
   var auditOriginalRenderLog = wmsRenderLog;
-  bindEvents = render = function () {};
+  bindEvents = render = cutoffInit = function () {};
   refreshSegLine = updateMarksInPlace = wmsRenderLog = wmsRenderState = function () {};
   wmsLogLine = function (text, cls) { window.__auditLog.push({text: text, cls: cls}); };
 ${initMarker}`).slice(0, -(closeMarker.length + 1)) + `
@@ -1064,7 +1064,8 @@ test('A03: live wave events only mark the exact submitted plan and order set', a
   h.api.wms.events = 0;
   h.audit.renderLog(job);
   assert.equal(h.api.state.waveNos.size, 0);
-  assert.ok(h.elements.get('wmsLog').children.some(line => line.textContent.includes('WLIVE')), 'Old event remains visible in logs');
+  assert.ok(!h.elements.get('wmsLog').children.some(line => line.textContent.includes('WLIVE')), 'Sidebar omits per-wave detail');
+  assert.ok(job.events[0].message.includes('WLIVE'), 'Full event remains available for details');
 });
 
 test('A16: retry clear retains original scope after the visible plan changes', async t => {

@@ -277,6 +277,7 @@ def test_generate_waves_http_preserves_normalization_and_payload_shape(app, monk
         create.assert_called_once_with(
             "generate_waves", "headless", wave_nos=[], segments=normalized,
             batch_id=None, plan_id=None, plan_snapshot=None,
+            follow_print=False,
         )
 
 

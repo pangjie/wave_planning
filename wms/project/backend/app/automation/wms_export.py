@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Literal
@@ -46,6 +48,8 @@ class WmsExportAutomation:
         self,
         progress: ProgressCallback,
         headless: bool | None = None,
+        created_range: dict[str, str] | None = None,
+        checkpoint: dict | None = None,
     ) -> ExportResult:
         effective_headless = resolve_headless(self.settings, headless)
         browser_label = "无头" if effective_headless else "有头"
@@ -62,9 +66,18 @@ class WmsExportAutomation:
             cleanup_warnings=warnings,
         ) as context:
             page = await first_page(context)
-            message, selected_template, task = await self._prepare_and_submit(
-                page, progress
-            )
+            if checkpoint and checkpoint.get("submitted"):
+                if not checkpoint.get("task_key"):
+                    raise AutomationError("导出已提交但任务身份未确认，请人工核对，不能自动重复提交。")
+                await page.goto(self.config.target_url, wait_until="domcontentloaded", timeout=self.config.timeouts_ms.navigation)
+                await progress("resuming_export", "继续等待并下载原导出任务，不重复提交。")
+                task = await self.task_center.wait_until_downloadable(page, set(), progress,
+                    detected_key=checkpoint["task_key"], checkpoint=True)
+                message, selected_template = "已恢复原导出任务。", self.config.template_name
+            else:
+                message, selected_template, task = await self._prepare_and_submit(
+                    page, progress, **({"created_range": created_range} if created_range else {})
+                )
             await progress("downloading", f"导出已完成，正在下载 {task.filename}")
             downloaded_file = await self.task_center.download(page, task, warnings=warnings)
             return ExportResult(
@@ -82,6 +95,7 @@ class WmsExportAutomation:
         self,
         page: Page,
         progress: ProgressCallback,
+        created_range: dict[str, str] | None = None,
     ) -> tuple[str, str, TaskCenterItem]:
         """打开订单页 → 校验模板 → 提交正式导出 → 等待任务可下载；返回提交信息、模板与任务。"""
         cfg = self.config
@@ -115,6 +129,11 @@ class WmsExportAutomation:
         if not await page_export.is_enabled():
             raise AutomationError("页面数据已显示，但“导出”按钮当前不可用。")
 
+        if created_range:
+            await self._apply_created_range(page, created_range, progress)
+        else:
+            # Never let a scheduled delta range leak into a manual full export.
+            await self._reset_order_filters(page)
         before_tasks = await self.task_center.snapshot(page)
         await progress(
             "task_snapshot",
@@ -141,6 +160,8 @@ class WmsExportAutomation:
 
         # This is the only irreversible/production-impacting click in the workflow.
         await progress("submitting", "模板校验完成，正在提交正式导出。")
+        if created_range:
+            await progress("export_checkpoint", json.dumps({"submitted": True}))
         await final_export.click(timeout=timeouts.action)
         submission_message = await self._read_result_message(page)
         await progress("waiting_export_task", "正在任务中心等待本次导出任务出现。")
@@ -148,8 +169,45 @@ class WmsExportAutomation:
             page,
             {item.key for item in before_tasks},
             progress,
+            **({"checkpoint": True} if created_range else {}),
         )
         return submission_message, selected_template, task
+
+    async def _reset_order_filters(self, page: Page) -> None:
+        # Fresh navigation normally opens 待处理. Reset removes persisted ad-hoc
+        # customer/SKU searches, never inherits a previous production search.
+        await page.get_by_role("button", name="重置", exact=True).click(timeout=self.config.timeouts_ms.action)
+        await wait_for_loading(page, self.config.selectors.loading_mask, self.config.timeouts_ms.navigation, "重置筛选超时。")
+        pending = page.get_by_role("tab", name=re.compile(r"^待处理(?:\s|\(|$)"))
+        await pending.click(timeout=self.config.timeouts_ms.action)
+        await wait_for_loading(page, self.config.selectors.loading_mask, self.config.timeouts_ms.navigation, "待处理列表加载超时。")
+
+    async def _apply_created_range(self, page: Page, bounds: dict[str, str], progress: ProgressCallback) -> None:
+        """Observed WMS date-range UI: Enter commits; blur alone can revert edits."""
+        start, end = bounds["start"], bounds["end"]
+        if datetime.fromisoformat(start) > datetime.fromisoformat(end):
+            raise AutomationError("创建时间范围无效。")
+        await self._reset_order_filters(page)
+        field = page.locator('.date-picker .search-time-field input.el-input__inner:visible')
+        if await field.count() != 1:
+            raise AutomationError("创建时间筛选控件不唯一，未提交导出。")
+        if await field.input_value() != "创建时间":
+            await field.click()
+            await page.locator('.el-select-dropdown:visible .el-select-dropdown__item').filter(has_text=re.compile(r'^\s*创建时间\s*$')).click()
+        first = page.locator('.date-picker input.el-range-input[placeholder="开始日期"]:visible')
+        last = page.locator('.date-picker input.el-range-input[placeholder="结束日期"]:visible')
+        await first.fill(start)
+        await last.fill(end)
+        await last.press("Enter")
+        await wait_for_loading(page, self.config.selectors.loading_mask, self.config.timeouts_ms.navigation, "时间筛选加载超时。")
+        await page.wait_for_function("""([start,end]) => {
+            const a=document.querySelector('.date-picker input.el-range-input[placeholder="开始日期"]');
+            const b=document.querySelector('.date-picker input.el-range-input[placeholder="结束日期"]');
+            return a && b && !a.disabled && !b.disabled && a.value===start && b.value===end;
+        }""", arg=[start, end], timeout=self.config.timeouts_ms.action)
+        if await field.input_value() != "创建时间" or await first.input_value() != start or await last.input_value() != end:
+            raise AutomationError("WMS 改写了创建时间筛选范围，已停止导出。")
+        await progress("created_range_verified", f"已确认待处理订单创建时间：{start} 至 {end}（WMS 页面时区）。")
 
     async def _ensure_template(self, dialog: Locator, page: Page) -> str:
         cfg = self.config

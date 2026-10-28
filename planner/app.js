@@ -282,10 +282,11 @@
       });
     });
   }
-  function handleFile(file) {
+  function handleFile(file, onDone) {
     var reader = new FileReader();
-    reader.onerror = function () { status('文件读取失败，请重试', 'err'); };
+    reader.onerror = function () { status('文件读取失败，请重试', 'err'); if(onDone) onDone(false); };
     reader.onload = function () {
+      var loaded = false;
       try {
         var wb = XLSX.read(new Uint8Array(reader.result), { type: 'array' });
         var loc = locateSheet(wb);
@@ -302,11 +303,13 @@
         wmsClearWaveHistory();
         /* 导入成功仅记入日志（左上角不再显示文件名栏） */
         wmsLogLine('已导入 ' + file.name + '（' + br.records.length + ' 单）。', 'imported');
+        loaded = true;
       } catch (e) {
         clearData();
         status('导入失败：' + (e && e.message ? e.message : '文件解析失败'), 'err');
       }
       render();
+      if(onDone) onDone(loaded);
     };
     reader.readAsArrayBuffer(file);
   }
@@ -1121,8 +1124,27 @@
   }
   wms.planSnapshots = new Map();
   wms.latestJobs = new Map();
+  var detailJobs = new Map(), detailNotices = [], summaryCards = new Map();
+  var logPanel = $('wmsPanel'), retryProgress = $('wmsRetryProgress');
   wms.retryDismissed = new Set();
+  wms.followPrint = false;
+  try {wms.followPrint = localStorage.getItem('wave-follow-print') === 'on';} catch(e) {}
+  function wmsFollowToggleState() {
+    var button=$('wmsFollowPrint');
+    button.setAttribute('aria-pressed',String(wms.followPrint));
+    button.title='跟随打印已'+(wms.followPrint?'开启':'关闭')+'：生成全部成功并保存规划文件后，自动打印本次单件和混件';
+    button.disabled=wms.active || wms.submitting || cutoffBusy;
+  }
+  $('wmsFollowPrint').onclick=function(){
+    if(wms.active || wms.submitting || cutoffBusy) return;
+    wms.followPrint=!wms.followPrint;
+    try{localStorage.setItem('wave-follow-print',wms.followPrint?'on':'off');}catch(e){}
+    wmsFollowToggleState();
+  };
+  wmsFollowToggleState();
   function wmsRememberJob(job) {
+    detailJobs.set(job.id,job);
+    renderLogDetails();
     var previous = wms.latestJobs.get(job.mode);
     if (!previous || previous.id === job.id || (previous.created_at || '') <= (job.created_at || '')) wms.latestJobs.set(job.mode, job);
   }
@@ -1208,14 +1230,15 @@
     }
   }
   function wmsUpdateRunButton() {
+    wmsFollowToggleState();
     var run = $('wmsRun');
     var retry = wmsRetryTarget();
-    run.disabled = wms.submitting || (wms.active ? false : !wms.mode);
+    run.disabled = wms.submitting || (!wms.active && cutoffBusy) || (wms.active ? false : !wms.mode);
     run.textContent = wms.active ? '取消任务' : retry ? '重试任务' : '开始任务';
     $('wmsNewTask').hidden = wms.active || !retry;
     $('wmsNewTask').disabled = wms.submitting;
     var tracked = wms.active ? wms.job : retry;
-    var progress = $('wmsRetryProgress');
+    var progress = retryProgress;
     progress.hidden = !tracked || tracked.checkpoint_version !== 1 || ['generate_waves','print_waves'].indexOf(tracked.mode) < 0;
     if (!progress.hidden) {
       var count = tracked.mode === 'generate_waves' ? Object.values(tracked.node_states || {}).filter(function (v) { return v === 'done'; }).length : Object.keys(tracked.print_files || {}).length;
@@ -1258,6 +1281,7 @@
     wmsUpdateRunButton();
   }
   function wmsRenderState() {
+    if(logPanel.parentNode !== $('wmsLog')) $('wmsLog').appendChild(logPanel);
     var st = $('wmsState');
     st.textContent = wms.job ? (WMS_STATE_LABEL[wms.job.status] || wms.job.status) : '空闲';
     st.className = 'wms-state ' + (wms.job ? wms.job.status : '');
@@ -1267,11 +1291,101 @@
     export: '全量分析', generate_waves: '生成波次',
     print_waves: '打印波次', pick_waves: '批量拣货'
   };
+  function wmsStageLabel(stage,status) {
+    if(WMS_DONE.indexOf(status)>=0) return {succeeded:'任务完成',failed:'任务失败，请查看日志详情',partial:'部分完成，请查看日志详情',cancelled:'任务已取消'}[status];
+    if(!stage || stage==='queued') return '等待执行';
+    if(stage==='completed') return '任务完成';
+    if(stage==='segment_wave') return '波次已生成';
+    if(stage==='print_checkpoint') return '打印文件已保存';
+    if(stage==='export_checkpoint') return '导出任务已记录';
+    if(/launch|navigat|opened|waiting_data/.test(stage)) return '准备浏览器和页面';
+    if(/merg/.test(stage)) return '合并打印文档';
+    if(/download/.test(stage)) return '下载订单文件';
+    if(/task_|waiting_export/.test(stage)) return '等待导出文件';
+    if(/template|dialog|submitt/.test(stage)) return '校验并提交';
+    if(/print|pdf/.test(stage)) return '打印波次';
+    if(/segment|wave|search/.test(stage)) return '处理波次';
+    if(/cancel/.test(stage)) return '正在取消';
+    if(/warn|fail|error/.test(stage)) return '遇到提示，请查看日志详情';
+    return '任务执行中';
+  }
+  function wmsSummary(job) {
+    var card=summaryCards.get(job.id);
+    if(!card || card.parentNode!==$('wmsLog')) {
+      card=document.createElement('div');card.className='ev task-summary';
+      $('wmsLog').appendChild(card);summaryCards.set(job.id,card);
+    }
+    var last=(job.events||[]).slice(-1)[0];
+    var text=wmsStageLabel(last&&last.stage,job.status);
+    if(job.mode==='generate_waves' || job.mode==='print_waves') {
+      var total=job.mode==='generate_waves'?(job.segments||[]).length:(job.wave_nos||[]).length;
+      var done=job.mode==='generate_waves'?((job.result&&job.result.segments)||[]).filter(function(s){return !!s.wave_no;}).length:Object.keys(job.print_files||{}).length;
+      if(job.mode==='generate_waves') done=Math.max(done,Object.values(job.node_states||{}).filter(function(s){return s==='done';}).length);
+      if(job.status==='succeeded') done=total;
+      text+=' · '+done+'/'+total+' 个波次';
+    }
+    card.textContent=text;
+  }
+  function renderLogDetails() {
+    if(!detailJobs || $('logDetailsPanel').hidden!==false) return;
+    var list=$('logDetailsContent');
+    var entries=Array.from(detailJobs.values()).filter(function(j){return !j.schedule_run_id;}).map(function(j){
+      var events=(j.events||[]).slice();
+      if(j.follow_print_error) events.push({stage:'跟随打印未启动',message:j.follow_print_error});
+      return {id:j.id,title:(j.generation_job_id?'跟随打印':WMS_MODE_LABEL[j.mode]||j.mode)+' · '+(WMS_STATE_LABEL[j.status]||j.status),at:j.created_at,attempt:j.attempt,events:events};
+    });
+    if(cutoffData) (cutoffData.runs||[]).forEach(function(r){entries.push({id:r.id,title:'定时截单 · '+(cutoffLabels[r.status]||r.status),at:r.cutoff,events:(r.events||[]).concat(r.current_events||[])});});
+    entries.sort(function(a,b){return String(b.at||'').localeCompare(String(a.at||''));});
+    if(detailNotices.length) entries.unshift({id:'page-notices',title:'页面操作与提示',events:detailNotices});
+    var signature=JSON.stringify(entries);
+    if(list.dataset.signature===signature) return;
+    list.dataset.signature=signature;
+    var panel=$('logDetailsPanel'),scroll=panel.scrollTop;
+    list.replaceChildren();
+    entries.forEach(function(entry){
+      var section=document.createElement('section');section.className='log-task';
+      var title=document.createElement('h3');title.textContent=entry.title;section.appendChild(title);
+      var meta=document.createElement('div');meta.className='log-task-meta';meta.textContent=(entry.at?entry.at.slice(0,19).replace('T',' ')+' · ':'')+(entry.attempt?'第 '+entry.attempt+' 轮 · ':'')+entry.events.length+' 条记录';section.appendChild(meta);
+      entry.events.forEach(function(ev){
+        var row=document.createElement('div');row.className='log-event '+(ev.stage||'');
+        var time=document.createElement('time');time.textContent=ev.at?String(ev.at).slice(0,19).replace('T',' '):'—';
+        var stage=document.createElement('strong');
+        var stageNames={failed:'执行失败',warning:'执行提示',segment_warning:'分段提示',persistence_warning:'记录保存异常',download_timing:'耗时统计',segment_start:'开始处理分段',segment_wave:'波次生成结果',print_checkpoint:'打印文件记录',export_checkpoint:'导出任务记录',completed:'执行完成',completed_with_warnings:'部分完成',cancelled:'已取消',queued:'已进入队列'};
+        stage.textContent=stageNames[ev.stage]||ev.stage||'执行记录';stage.title=ev.stage||'';
+        var message=document.createElement('p');var text=ev.message;
+        if(typeof text!=='string') text=JSON.stringify(text,null,2);
+        else if(/^[\[{]/.test(text)) {try{text=JSON.stringify(JSON.parse(text),null,2);}catch(e){}}
+        message.textContent=text;row.append(time,stage,message);section.appendChild(row);
+      });
+      list.appendChild(section);
+    });
+    if(!entries.length) list.textContent='暂无任务日志。';
+    panel.scrollTop=scroll;
+  }
+  var detailFetching=false;
+  async function refreshLogDetails() {
+    if($('logDetailsPanel').hidden || detailFetching) return;
+    detailFetching=true;
+    try {
+      var r=await fetch('/api/jobs',{signal:AbortSignal.timeout(5000)});
+      if(!r.ok) throw new Error('HTTP '+r.status);
+      var jobs=await r.json();jobs.forEach(function(j){detailJobs.set(j.id,j);});
+      renderLogDetails();$('logDetailsStatus').textContent='按任务展示完整过程；执行中的记录自动更新。';
+    }catch(e){$('logDetailsStatus').textContent='日志更新失败，已保留现有记录：'+e.message;}
+    finally{detailFetching=false;}
+  }
+  $('btnLogDetails').onclick=function(){
+    var open=$('logDetailsPanel').hidden;
+    $('logDetailsPanel').hidden=!open;$('schedulePanel').hidden=true;$('out').hidden=open;
+    $('btnLogDetails').setAttribute('aria-expanded',String(open));$('btnSchedule').setAttribute('aria-expanded','false');
+    if(open){renderLogDetails();refreshLogDetails();}
+  };
+  setInterval(refreshLogDetails,5000);
   function wmsJobHeaderLine(job) {
     var line = document.createElement('div');
     line.className = 'ev jobhead';
-    var t = job.created_at ? String(job.created_at).slice(11, 19) : '';
-    line.textContent = '▶ ' + t + ' 开始任务：' + (WMS_MODE_LABEL[job.mode] || job.mode) + (job.attempt > 1 ? ' · 第 ' + job.attempt + ' 轮续跑' : '');
+    var t = job.created_at ? String(job.created_at).slice(11, 16) : '';
+    line.textContent = '▶ ' + t + ' 开始任务：' + (job.generation_job_id ? '跟随打印' : (WMS_MODE_LABEL[job.mode] || job.mode)) + (job.attempt > 1 ? ' · 第 ' + job.attempt + ' 轮续跑' : '');
     return line;
   }
   function wmsLinkLine(href, download, text) {
@@ -1305,15 +1419,14 @@
     }
   }
   function wmsRenderLog(job) {
+    if(logPanel.parentNode !== $('wmsLog')) $('wmsLog').appendChild(logPanel);
     wmsRememberJob(job);
+    if (job.follow_print) wmsFollowWatch(job);
     var log = $('wmsLog');
     while (wms.events < job.events.length) {
       var ev = job.events[wms.events++];
       // Structured checkpoints are internal recovery facts, not user log prose.
-      if (ev.stage === 'segment_start' || ev.stage === 'print_checkpoint') continue;
-      var line = document.createElement('div');
-      line.className = 'ev ' + ev.stage;
-      var t = ev.at ? String(ev.at).slice(11, 19) : '';
+      if (ev.stage === 'segment_start' || ev.stage === 'print_checkpoint' || ev.stage === 'export_checkpoint') continue;
       /* 逐段波次事件：生成一个立即回填一个并变绿 */
       if (ev.stage === 'segment_wave') {
         try {
@@ -1325,21 +1438,17 @@
               refreshSegLine(key);
               updateMarksInPlace();
             }
-            line.textContent = t + ' [波次生成] ' + wv.channel + ' ' + wv.seg_name + ' → ' + wv.wave_no;
-            log.appendChild(line);
-            log.scrollTop = log.scrollHeight;
             continue;
           }
-        } catch (e) { /* 非结构化消息按普通事件展示 */ }
+        } catch (e) { /* 完整原文已保留在日志详情。 */ }
       }
-      line.textContent = t + ' [' + ev.stage + '] ' + ev.message;
-      log.appendChild(line);
     }
     /* 任务完成后挂载其可下载文件（导出文件 / 合并文档），每个任务仅一次 */
     wmsAppendDownloadLinks(job);
+    wmsSummary(job);
     log.scrollTop = log.scrollHeight;
     var last = job.events[job.events.length - 1];
-    $('wmsMsg').textContent = last ? last.message : '';
+    $('wmsMsg').textContent = job.generation_job_id?'跟随打印':(WMS_MODE_LABEL[job.mode]||job.mode);
     wmsRenderState();
   }
   function wmsStopPolling() {
@@ -1363,6 +1472,10 @@
     } catch (e) { /* 自动导入失败不影响任务结果展示 */ }
   }
   function wmsLogLine(text, cls) {
+    detailNotices.push({at:new Date().toISOString(),stage:cls||'提示',message:text});
+    renderLogDetails();
+    if(cls==='synced') return;
+    if(['err','warn','failed'].indexOf(cls)>=0 && text.length>100) text=text.split(/[：:]/)[0]+'；请查看日志详情。';
     var log = $('wmsLog');
     var line = document.createElement('div');
     line.className = 'ev ' + (cls || 'warn');
@@ -1433,7 +1546,7 @@
       }
       await wmsApplyWaveNos(job);
     }
-    else if (job.status === 'succeeded' && job.mode === 'export') await wmsAutoImport(job, wms.pollEpoch);
+    else if (job.status === 'succeeded' && job.mode === 'export' && !job.schedule_run_id) await wmsAutoImport(job, wms.pollEpoch);
   }
   function wmsStartPolling(job, alreadyRendered) {
     wms.latestJobs.set(job.mode, job);
@@ -1513,6 +1626,7 @@
       confirm_production: true
     };
     if (mode === 'generate_waves') {
+      body.follow_print = wms.followPrint;
       body.segments = wmsEffectiveSegments();
       if (!body.segments.length) { status('没有可生成波次的分段：请先勾选渠道与分段', 'err'); return; }
       Object.assign(body, planIdentity());
@@ -1737,6 +1851,7 @@
         wms.planSnapshots.delete(job.id);
         if (entry.retryLink) { entry.retryLink.parentNode.remove(); entry.retryLink = null; }
         wmsRenderExportLinks();
+        if (job.follow_print) wmsRefreshFollow();
         return true;
       } catch (e) {
         wmsLogLine('自动导出失败：' + (e && e.message ? e.message : e) + '。可重试保存文件，无需重新生成波次。', 'err');
@@ -1756,6 +1871,63 @@
     }).finally(function () { entry.pending = null; });
     return entry.pending;
   }
+  var followCards = new Map(), followSeen = new Set(), followRequest = false, followTimer = null;
+  function wmsFollowWatch(job) {
+    if (!followCards.has(job.id)) {
+      var card = document.createElement('div');
+      card.className = 'ev follow-print-status';
+      $('wmsLog').appendChild(card);
+      followCards.set(job.id, card);
+    }
+    wmsFollowCard(job);
+    if (!followTimer) followTimer = setInterval(wmsRefreshFollow, 3000);
+  }
+  function wmsFollowCard(job) {
+    var card = followCards.get(job.id);
+    if (!card) return;
+    card.innerHTML = '';
+    var labels = {waiting_generation:'等待生成完成',waiting_file:'等待规划文件保存',pending:'等待浏览器空闲',started:'已启动',cancelled:'已取消',skipped:'没有单件或混件，已跳过',blocked:'未启动，请查看日志详情'};
+    var stopped = ['failed','partial','cancelled'].indexOf(job.status)>=0;
+    card.textContent = '跟随打印 · ' + (stopped ? '生成未全部完成，不自动打印' : (labels[job.follow_print_state]||'等待生成完成'));
+    if (!job.follow_print_job_id && !stopped && ['waiting_generation','waiting_file','pending'].indexOf(job.follow_print_state)>=0) {
+      var cancel = document.createElement('a'); cancel.href='#'; cancel.textContent='　取消跟随打印';
+      cancel.onclick=async function(e){e.preventDefault();try{
+        var r=await fetch('/api/jobs/'+job.id+'/follow-print/cancel',{method:'POST'});
+        if(!r.ok) throw new Error('状态已变化，请刷新后取消打印任务');
+        await wmsRefreshFollow();
+      }catch(err){wmsLogLine(err.message);}};
+      card.appendChild(cancel);
+    }
+  }
+  async function wmsRefreshFollow() {
+    if(followRequest || !followCards.size) return;
+    followRequest=true;
+    var epoch=wms.pollEpoch;
+    try {
+      var response=await fetch('/api/jobs',{signal:AbortSignal.timeout(5000)});
+      if(!response.ok) return;
+      var jobs=await response.json();
+      jobs.forEach(function(j){if(j.follow_print) wmsFollowCard(j);});
+      jobs.forEach(function(parent){
+        if(!parent.follow_print_job_id || !followCards.has(parent.id)) return;
+        var child=jobs.find(function(j){return j.id===parent.follow_print_job_id;});
+        var visited=new Set();
+        while(child && child.retry_job_id && !visited.has(child.id)){
+          visited.add(child.id); child=jobs.find(function(j){return j.id===child.retry_job_id;});
+        }
+        if(child) followCards.get(parent.id).textContent='跟随打印 · '+(WMS_STATE_LABEL[child.status]||child.status);
+      });
+      if(epoch!==wms.pollEpoch || wms.active || wms.submitting) return;
+      // Adopt only a new linked print attempt; never repeatedly override manual choices.
+      var child=jobs.find(function(j){return j.generation_job_id && followCards.has(j.generation_job_id) && !j.retry_job_id && !followSeen.has(j.id);});
+      if(child){
+        followSeen.add(child.id);
+        wmsStartPolling(child,false);
+        await wmsPollOnce();
+      }
+    } catch(e) { /* Reconcile again after connectivity returns. */ }
+    finally {followRequest=false;}
+  }
   function wmsEnsureHealthLoop() {
     if (wms.healthTimer) return;
     wms.healthTimer = setInterval(function () {
@@ -1770,6 +1942,7 @@
     if (wms.available === ok) return;  // 状态未变化时不动界面
     if (!ok) wmsInvalidateHistoryReads(false);
     wms.available = ok;
+    if(!ok) cutoffIndicator(null);
     $('wmsSection').style.display = ok ? '' : 'none';
     $('wmsPanel').hidden = !ok;
     $('wmsDot').className = 'wms-dot ' + (ok ? 'ok' : 'err');
@@ -1790,7 +1963,7 @@
     try {
       var resp = await fetch('/api/jobs');
       if (resp.ok) {
-        var jobs = await resp.json();
+        var jobs = (await resp.json()).filter(function(j){return !j.schedule_run_id;});
         if (epoch !== wms.pollEpoch || wms.active || wms.submitting) return;
         if (jobs.length) {
           var log = $('wmsLog');
@@ -1831,9 +2004,122 @@
     wmsRestoreHistoryRetry();
   }
 
+  /* 一个每日截单；调度、下载和合并属于后端，只有用户点击才分析。 */
+  var cutoffBusy = false, cutoffLoading = false, cutoffData = null, cutoffDirty = false, cutoffRequest = false;
+  var cutoffLabels = {base:'预导出中',waiting:'等待截单',delta:'增量导出中',merge:'合并校验中',succeeded:'文件已就绪',failed:'失败',missed:'已错过'};
+  function cutoffView(open) {
+    $('logDetailsPanel').hidden = true;
+    $('btnLogDetails').setAttribute('aria-expanded','false');
+    $('schedulePanel').hidden = !open;
+    $('out').hidden = open;
+    $('btnSchedule').setAttribute('aria-expanded', String(open));
+  }
+  function cutoffTime(value, zone) {
+    if(!value) return '—';
+    return new Intl.DateTimeFormat('zh-CN',{timeZone:zone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}).format(new Date(value));
+  }
+  function cutoffFileLink(run, download) {
+    var a = document.createElement('a');
+    a.className = 'schedule-file';
+    a.href = '/api/schedule/runs/' + encodeURIComponent(run.id) + '/file';
+    a.textContent = download ? '下载' : run.filename + ' · 点击加载分析';
+    if(download) {a.download = run.filename;}
+    else a.onclick = function(e){e.preventDefault();cutoffLoad(run);};
+    return a;
+  }
+  async function cutoffLoad(run) {
+    if(cutoffLoading || wms.active || wms.submitting || cutoffBusy) {status('请等待当前任务结束后再加载截单订单。','err');return;}
+    cutoffLoading=true; wms.submitting=true; wmsUpdateRunButton(); $('btnImport').disabled=true;
+    try {
+      var jobs = await cutoffFetch('/api/jobs');
+      if(jobs.some(function(j){return WMS_ACTIVE.indexOf(j.status)>=0;})) throw new Error('后台任务正在运行，请稍后加载。');
+      if(state.records.length && !window.confirm('加载截单订单将替换当前规划与波次标记，是否继续？')) return;
+      var response=await fetch('/api/schedule/runs/'+encodeURIComponent(run.id)+'/file',{signal:AbortSignal.timeout(60000)});
+      if(!response.ok) throw new Error('截单文件无法读取，请检查执行记录或下载文件。');
+      var bytes=await response.arrayBuffer();
+      var loaded=await new Promise(function(resolve){handleFile(new File([bytes],run.filename),resolve);});
+      if(loaded) {cutoffView(false);wmsLogLine('已加载截单结果：'+cutoffTime(run.cutoff,run.timezone)+'（'+run.timezone+'）。','completed');}
+    } catch(e) {status(e.message,'err');wmsLogLine('截单加载失败：'+e.message,'failed');}
+    finally {cutoffLoading=false;wms.submitting=false;$('btnImport').disabled=false;wmsUpdateRunButton();}
+  }
+  async function cutoffFetch(url, options) {
+    var response=await fetch(url,Object.assign({signal:AbortSignal.timeout(10000)},options||{}));
+    var data=await response.json();
+    if(!response.ok) throw new Error(typeof data.detail==='string'?data.detail:JSON.stringify(data.detail||'请求失败'));
+    return data;
+  }
+  function cutoffIndicator(data) {
+    var latest=data && data.runs && data.runs[0];
+    var attention=!!(data && (data.error || (latest && ['failed','missed'].indexOf(latest.status)>=0)));
+    var healthy=!!(data && data.config.enabled && !attention);
+    var label=!data?'服务未连接':attention?'需要检查执行记录':!data.config.enabled?'未启用':data.browser_busy?'正在执行':'已启用，调度正常';
+    $('btnSchedule').classList.toggle('scheduled-on',healthy);
+    $('btnSchedule').title='定时任务：'+label;
+    $('btnSchedule').setAttribute('aria-label','定时任务：'+label);
+  }
+  function cutoffRender(data, fill) {
+    cutoffData=data; cutoffBusy=!!data.browser_busy; wmsUpdateRunButton();
+    cutoffIndicator(data);
+    var c=data.config;
+    if(fill && !cutoffDirty) {
+      $('scheduleEnabled').checked=c.enabled;$('scheduleTime').value=c.cutoff_time;
+      $('scheduleAdvance').value=c.advance_minutes;$('scheduleTimezone').value=c.timezone;
+    }
+    $('scheduleSave').disabled=!!data.error;
+    $('scheduleMessage').textContent=data.error || (c.enabled ? '下次预导出：'+cutoffTime(data.next_base,c.timezone)+'；截单：'+cutoffTime(data.next_cutoff,c.timezone)+'（'+c.timezone+'）' : '定时截单已停用。保存启用后才会执行。');
+    var list=$('scheduleRuns');
+    var signature=JSON.stringify(data.runs);
+    if(list.dataset.signature!==signature) {
+      var expanded=Array.from(list.querySelectorAll('details[open]')).map(function(el){return el.dataset.run;});
+      list.replaceChildren();list.dataset.signature=signature;
+      data.runs.forEach(function(run){
+        var card=document.createElement('details');card.className='schedule-run';card.dataset.run=run.id;card.open=expanded.indexOf(run.id)>=0;
+        var title=document.createElement('summary');title.textContent=cutoffTime(run.cutoff,run.timezone)+' · '+(cutoffLabels[run.status]||run.status)+' · '+run.timezone;card.appendChild(title);
+        if(run.status==='succeeded') {var p=document.createElement('p');p.append(cutoffFileLink(run,false),document.createTextNode('　'),cutoffFileLink(run,true));card.appendChild(p);}
+        if(run.status==='failed') {var retry=document.createElement('button');retry.className='bb';retry.textContent='重试失败阶段';retry.onclick=async function(){retry.disabled=true;try{cutoffRender(await cutoffFetch('/api/schedule/runs/'+encodeURIComponent(run.id)+'/retry',{method:'POST'}),false);}catch(e){$('scheduleMessage').textContent=e.message;retry.disabled=false;}};card.appendChild(retry);}
+        var logs=document.createElement('button');logs.className='bb';logs.textContent='查看日志详情';logs.onclick=function(){$('btnLogDetails').click();};card.appendChild(logs);list.appendChild(card);
+      });
+    }
+    data.runs.slice(0,5).reverse().forEach(function(run){
+      var id='cutoff-log-'+run.id, line=$(id), sig=JSON.stringify(run);
+      if(line && line.dataset.signature===sig) return;
+      var log=$('wmsLog'), atBottom=log.scrollTop+log.clientHeight>=log.scrollHeight-30;
+      if(!line) {line=document.createElement('div');line.id=id;line.className='ev link cutoff-log';log.appendChild(line);}
+      line.dataset.signature=sig;line.replaceChildren();
+      var title=document.createElement('div');title.className='ev jobhead';title.textContent='截单 '+cutoffTime(run.cutoff,run.timezone)+' · '+(cutoffLabels[run.status]||run.status);line.appendChild(title);
+      if(run.status==='succeeded') line.append(cutoffFileLink(run,false),cutoffFileLink(run,true));
+      if(run.status==='failed') {var hint=document.createElement('div');hint.textContent='截单失败，请在定时任务中重试；原因见日志详情。';line.appendChild(hint);}
+      if(atBottom) log.scrollTop=log.scrollHeight;
+    });
+    renderLogDetails();
+  }
+  async function cutoffRefresh() {
+    if(cutoffRequest) return;
+    cutoffRequest=true;
+    try {var data=await cutoffFetch('/api/schedule');if(data && data.config && Array.isArray(data.runs)) cutoffRender(data,true);}
+    catch(e) {cutoffIndicator(null);$('scheduleMessage').textContent='定时服务不可用：'+e.message;$('scheduleSave').disabled=true;}
+    finally {cutoffRequest=false;}
+  }
+  function cutoffInit() {
+  $('btnSchedule').onclick=function(){cutoffView($('schedulePanel').hidden);if(!$('schedulePanel').hidden) cutoffRefresh();};
+  $('scheduleForm').addEventListener('input',function(){cutoffDirty=true;});
+  $('scheduleForm').onsubmit=async function(e){
+    e.preventDefault();$('scheduleSave').disabled=true;
+    try {
+      var data=await cutoffFetch('/api/schedule',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:$('scheduleEnabled').checked,cutoff_time:$('scheduleTime').value,advance_minutes:Number($('scheduleAdvance').value),timezone:$('scheduleTimezone').value.trim()})});
+      cutoffDirty=false;cutoffRender(data,true);wmsLogLine('定时截单配置已保存，范围为截单时刻往前一周。','completed');
+    }catch(err){$('scheduleMessage').textContent=err.message;}
+    finally{$('scheduleSave').disabled=false;}
+  };
+  if(location.protocol!=='file:') {cutoffRefresh();setInterval(function(){if(wms.available) cutoffRefresh();},5000);}
+  }
+  cutoffInit();
+
   /* 测试钩子 */
   window.__dshTest = {
     handleFile: handleFile,
+    cutoffRefresh: cutoffRefresh,
+    cutoffLoad: cutoffLoad,
     state: state,
     wms: wms,
     wmsSubmit: wmsSubmit,
