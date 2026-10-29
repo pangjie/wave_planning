@@ -1,3 +1,5 @@
+# 每日截单状态机；配置和运行历史持久化，导出阶段复用普通导出任务。
+# 服务运行时才推进；产出文件后由用户在前端点击加载，不在后台执行规划分析。
 """One daily cutoff, driven by the existing server and existing job manager."""
 from __future__ import annotations
 
@@ -45,6 +47,8 @@ def now_utc():
 
 
 def occurrence(config: CutoffConfig, after: datetime) -> datetime:
+    # 使用配置时区的日历时间；选择预导出尚未开始的下一次截单。
+    # UTC 往返校验跳过夏令时不存在的本地时刻，避免用固定 24 小时推算日期。
     """Next occurrence whose pre-export has not started. Fold=0, skip DST gaps."""
     zone = ZoneInfo(config.timezone)
     date = after.astimezone(zone).date()
@@ -61,6 +65,8 @@ def occurrence(config: CutoffConfig, after: datetime) -> datetime:
 
 
 class CutoffScheduler:
+    # 每次运行：base → waiting → delta → merge → succeeded；出错记录 failed_stage。
+    # 调度依赖服务进程存活，不负责唤醒 macOS。WMS 操作复用 JobManager 的占用控制。
     def __init__(self, manager: JobManager, downloads: Path):
         self.manager = manager
         self.root = downloads / "scheduled"
@@ -91,6 +97,8 @@ class CutoffScheduler:
                 self.config.enabled = False
 
     def save(self):
+        # 同目录临时文件 + fsync + replace 防止读到半份 JSON。写盘异常向上传播；
+        # 原文件保留，但这不等于所有内存状态已回滚，loop 会暂停并暴露 error。
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_name(f".cutoff-{uuid4().hex}.tmp")
         try:
@@ -102,6 +110,7 @@ class CutoffScheduler:
         finally:
             tmp.unlink(missing_ok=True)
 
+    # 返回界面需要的副本并附当前导出事件，内部检查点不作为用户日志展示。
     def snapshot(self):
         config = self.config.model_dump()
         cutoff = datetime.fromisoformat(self.next_cutoff) if self.next_cutoff else None
@@ -114,6 +123,7 @@ class CutoffScheduler:
                 "next_base": (cutoff - timedelta(minutes=self.config.advance_minutes)).isoformat() if cutoff else None,
                 "error": self.error, "runs": runs}
 
+    # 保存失败时恢复旧配置和下次时间，避免实际未保存却继续按新配置执行。
     def configure(self, config: CutoffConfig):
         if self.error:
             raise ValueError(self.error)
@@ -131,6 +141,7 @@ class CutoffScheduler:
         run["events"].append({"at": now_utc().isoformat(), "message": message})
 
     def retry(self, run_id: str):
+        # 重试失败阶段，保留成功阶段文件；已提交但未识别任务身份时禁止重复提交。
         if self.error:
             raise ValueError(self.error)
         run = self.find(run_id)
@@ -164,6 +175,7 @@ class CutoffScheduler:
             raise ValueError("截单文件已不存在")
         return path
 
+    # 先持久化本次运行身份和下次时间，再推进阶段；错过的计划不伪装成准点截单。
     async def tick(self, now: datetime | None = None):
         if self.error:
             return
@@ -194,6 +206,9 @@ class CutoffScheduler:
             self.save()
 
     async def advance(self, run, now):
+        # 一次只推进一个阶段；固定本次创建时间边界，不用实际执行时间替代截单时间。
+        # 预导出覆盖截单前一周，增量从预导出边界前 30 秒开始，交集交给订单号去重。
+        # 这不是订单状态全量同步：预导出后取消且未出现在增量中的订单仍会保留。
         if run["status"] == "waiting":
             if now < datetime.fromisoformat(run["cutoff"]):
                 return
@@ -254,6 +269,7 @@ class CutoffScheduler:
         self.event(run, f"开始{'预导出' if stage == 'base' else '增量导出'}：创建时间 {bounds['start']} 至 {bounds['end']}（{run['timezone']}）。" + ("执行已延迟，筛选截止时间保持不变。" if now > end + timedelta(seconds=30) else ""))
         self.save()
 
+    # 调度异常会暂停后续 tick 并暴露 error，避免持久化失效时继续生产导出。
     async def loop(self):
         while not self.stop_event.is_set():
             try:
@@ -269,6 +285,7 @@ class CutoffScheduler:
     def start(self):
         self.worker = asyncio.create_task(self.loop())
 
+    # 停止下一轮调度并等当前循环结束；任务取消由主服务生命周期统一处理。
     async def stop(self):
         self.stop_event.set()
         if self.worker:

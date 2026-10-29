@@ -1,3 +1,4 @@
+# 回归范围：截单日历、阶段恢复、文件合并与边界重叠去重。
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace

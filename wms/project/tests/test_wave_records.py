@@ -1,3 +1,4 @@
+# 回归范围：波次索引的读写、范围隔离与损坏文件保留。
 import errno
 import json
 from pathlib import Path

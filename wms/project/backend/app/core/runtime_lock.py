@@ -1,3 +1,5 @@
+# 本机互斥锁用于防止多个服务同时占用同一浏览器 profile/运行目录。
+# 它不是任务队列锁；进程内的任务互斥由 JobManager 负责。
 """Single-machine ownership for this application's data and browser profile.
 
 The open descriptors, not the presence of the files, own the locks. Keep the

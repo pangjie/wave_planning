@@ -1,3 +1,4 @@
+# 回归范围：持久化失败和启动恢复的行为，所有文件位于临时目录。
 """Persistence faults use temporary files and mock workflows, never WMS."""
 
 import asyncio

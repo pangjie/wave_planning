@@ -1,3 +1,4 @@
+# 回归范围：模拟页面操作，验证搜索、分页、勾选和波次确认。
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -298,7 +299,7 @@ async def test_run_continues_after_segment_failure(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_skips_oversized_segment(monkeypatch) -> None:
+async def test_run_rejects_entire_batch_before_browser_for_oversized_segment(monkeypatch) -> None:
     import app.automation.wms_wave_generate as _mod
 
     automation = make_automation()
@@ -319,16 +320,14 @@ async def test_run_skips_oversized_segment(monkeypatch) -> None:
     async def progress(stage: str, msg: str) -> None:
         pass
 
-    res = await automation.run(progress, headless=False, segments=[
-        {"channel": "BIG", "seg_name": "超限段",
-         "order_nos": ["OBS" + str(i) for i in range(701)]},
-        {"channel": "CBT", "seg_name": "爆品2", "order_nos": ["OBS1"]},
-    ])
-
-    assert res.generated_count == 1 and res.failed_count == 1
-    assert res.segments[0].wave_no is None and "单次上限" in (res.segments[0].note or "")
-    assert res.segments[1].wave_no == "W0092608180088"
-    assert automation._generate_one.await_count == 1  # 超限段不进入浏览器流程
+    with pytest.raises(ValueError, match="未启动任何分段"):
+        await automation.run(progress, headless=False, segments=[
+            {"channel": "CBT", "seg_name": "爆品2", "order_nos": ["SMALL"]},
+            {"channel": "BIG", "seg_name": "超限段",
+             "order_nos": ["OBS" + str(i) for i in range(701)]},
+        ])
+    automation._generate_one.assert_not_awaited()
+    cm.__aenter__.assert_not_awaited()
 
 
 @pytest.mark.asyncio

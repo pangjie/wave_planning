@@ -1,3 +1,4 @@
+// 浏览器回归：打印输入为空时，从当前规划提取已生成的单件/混件波次并保持顺序。
 'use strict';
 const path=require('path');
 const T=require('./test-helpers.js');

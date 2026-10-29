@@ -1,3 +1,5 @@
+# 打印流程：按波次定位 → 选择打印模板 → 捕获预览 → 生成单波 PDF → 有序合并。
+# 并发发生在同一任务的独立页面；节点 PDF 检查点支持失败续跑，合并须等待全部齐全。
 from __future__ import annotations
 
 import asyncio
@@ -90,6 +92,7 @@ class QpdfMerger:
             None,
         )
 
+    # 按输入顺序构建 qpdf 参数数组，不通过 shell 解释文件路径。
     def build_command(self, inputs: list[Path], output: Path) -> list[str]:
         if not self.binary:
             raise AutomationError(
@@ -105,6 +108,7 @@ class QpdfMerger:
         ]
 
     async def merge(self, inputs: list[Path], output: Path) -> None:
+        # qpdf 成功退出仍需核对总页数；只有源 PDF 全部存在且页数守恒才发布合并文件。
         if not inputs:
             raise AutomationError("没有可合并的波次 PDF。")
         for path in inputs:
@@ -209,6 +213,8 @@ class WmsWavePrintAutomation:
         return result
 
     def _reusable_files(self, selected: list[str], files: dict[str, dict[str, str]]) -> dict[str, Path]:
+        # 重试只复用目录、PDF 结构、页数和 SHA256 都匹配的节点文件；文件名相同
+        # 不代表内容仍可靠，缺失或变化的文件必须重新打印而不是从合并结果中省略。
         reusable = {}
         for wave in selected:
             entry = files.get(wave)
@@ -239,6 +245,7 @@ class WmsWavePrintAutomation:
                                message=f"已完成 {len(files)}/{len(wave_nos)} 个波次并合并为 {name}。",
                                completed_at=datetime.now().astimezone().isoformat())
 
+    # 归一化并校验波次清单，保留首次出现顺序供最终 PDF 合并。
     def _validate_request(
         self,
         wave_nos: list[str],
@@ -285,6 +292,7 @@ class WmsWavePrintAutomation:
         )
 
         printed_by_index: list[Path | None] = [(reusable or {}).get(w) for w in wave_nos]
+        # 结果按输入索引存放，不按并行完成先后追加；合并 PDF 必须保持波次表顺序。
         failed_wave_nos: list[str] = []
         warnings: list[str] = []
 
@@ -338,6 +346,7 @@ class WmsWavePrintAutomation:
                 return printed_file
 
             results = await asyncio.gather(
+                # 收齐本批所有页面的结果后再判断错误，保住其他已成功页面的检查点。
                 *(
                     run_page(index, page, wave_no)
                     for index, (page, wave_no) in enumerate(
@@ -881,6 +890,8 @@ class WmsWavePrintAutomation:
         wave_no: str,
         output: Path,
     ) -> None:
+        # 验证预览属于当前波次后，在独立页面渲染 PDF，不操作系统打印对话框。
+        # 临时 PDF 完成结构校验和内容居中后才替换输出文件；finally 只负责资源清理。
         output.parent.mkdir(parents=True, exist_ok=True)
         descriptor, temporary_name = tempfile.mkstemp(
             prefix=f".{output.stem}.",
@@ -964,6 +975,7 @@ class WmsWavePrintAutomation:
                 record_cleanup_warning(f"清理波次 {wave_no} PDF 临时文件", exc)
 
     @staticmethod
+    # 提取可验证的预览 HTML 和逻辑纸张尺寸，供独立渲染页面使用。
     async def _capture_print_preview(page: Page) -> dict[str, object]:
         snapshot = await page.evaluate(
             r"""
@@ -1168,6 +1180,7 @@ def _is_reprint_prompt(message: str, wave_no: str) -> bool:
     )
 
 
+# 文件存在、大小和 PDF 标记是基础检查；调用方还会按流程校验页数。
 def _validate_pdf(path: Path, *, label: str, minimum_size: int = 100) -> None:
     if not path.is_file() or path.stat().st_size < minimum_size:
         raise AutomationError(f"{label}不存在或内容为空。")

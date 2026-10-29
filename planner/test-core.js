@@ -78,14 +78,15 @@ console.log('✔ 样本文件：不重不漏（渠道合计=类型合计=5700）
 
 /* 分段不变量 */
 a.channels.forEach(c => {
-  /* 爆品/paper：普通段不超过容量（超大 SKU 段除外） */
-  ['hot', 'paper'].forEach(t => {
+  /* 仅爆品受容量限制（超大 SKU 段除外）。 */
+  ['hot'].forEach(t => {
     c.byType[t].forEach(s => {
       if (s.skuCount === 1) return; // 单个 SKU 段允许超容量
       assert(s.orderCount <= c.params.capacity, `${c.id} ${s.name} 超过容量: ${s.orderCount} > ${c.params.capacity}`);
     });
   });
   /* 多件：分段数 ≤ 多件分段数 */
+  assert(c.byType.paper.length <= c.params.paperSegs, `${c.id} 单件分段数超限`);
   assert(c.byType.multi.length <= c.params.multiSegs, `${c.id} 多件分段数超限`);
   /* 混件：不同分段 SKU 互斥 */
   const mixSegs = c.byType.mix;

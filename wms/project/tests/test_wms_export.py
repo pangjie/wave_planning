@@ -1,3 +1,4 @@
+# 回归范围：模拟导出模板、任务中心识别与下载流程。
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 

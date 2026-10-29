@@ -1,3 +1,4 @@
+# 兼容旧命令的测试入口，转交隔离的模拟流程；不是生产全自动操作脚本。
 """Compatibility entry point for the isolated, mock-only browser workflow test.
 
 Never attach to an existing service. The Node test owns its random-port mock

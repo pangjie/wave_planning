@@ -1,6 +1,6 @@
 /* Offline audit regressions. Run: node --test planner/test-audit-regressions.js
- * These assert the intended business behavior and deliberately remain red until
- * the audited defects are fixed. No browser, server, production data, or network.
+ * These preserve the intended behavior of the audited fixes.
+ * No browser, server, production data, or network.
  */
 'use strict';
 
@@ -323,17 +323,17 @@ test('A05: importing a new batch and changing hotLine preserves the other unifie
   assert.equal(h.api.state.modes.normal.unified.capacity, 800);
   const channel = h.api.curAnalysis().channels.find(item => item.id === 'CBT');
   assert.deepEqual(JSON.parse(JSON.stringify(channel.params)),
-    { hotLine: 20, capacity: 800, multiSegs: 3, mixSegs: 2, absorb: 1 },
+    { hotLine: 20, capacity: 800, paperSegs: 1, multiSegs: 3, mixSegs: 2, absorb: 1 },
     'Displayed unified values and effective channel values must agree after import');
 });
 
 for (const mode of ['normal', 'merged']) {
-  for (const changed of ['capacity', 'hotLine', 'multiSegs', 'mixSegs', 'absorb']) {
+  for (const changed of ['capacity', 'hotLine', 'paperSegs', 'multiSegs', 'mixSegs', 'absorb']) {
     test(`A05: ${mode} reimport preserves all other parameters when ${changed} changes`, t => {
       const h = harness(t);
       h.api.state.merged = mode === 'merged';
       h.importRows(singleRows(25, 'FIRST'));
-      const initial = { capacity: 800, hotLine: 30, multiSegs: 3, mixSegs: 2, absorb: 2 };
+      const initial = { capacity: 800, hotLine: 30, paperSegs: 2, multiSegs: 3, mixSegs: 2, absorb: 2 };
       for (const [key, value] of Object.entries(initial)) h.audit.setUnified(key, value);
       h.importRows(singleRows(25, 'SECOND'));
       const expected = { ...initial, [changed]: changed === 'capacity' ? 900 : initial[changed] + 1 };

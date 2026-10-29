@@ -1,3 +1,5 @@
+# 导出任务中心适配：提交前后对比任务身份，等待可下载状态并保存指定文件。
+# 不能因为历史文件名看起来正确就下载它；截单检查点模式遇到多个新候选时会报错。
 from __future__ import annotations
 
 import asyncio
@@ -24,6 +26,7 @@ class TaskCenterItem:
     downloadable: bool
 
     @property
+    # 文件名和创建时间共同标识任务，状态变化不改变身份。
     def key(self) -> str:
         return f"{self.filename}\x00{self.created_at}"
 
@@ -221,6 +224,8 @@ class ExportTaskCenter:
             if item.get("filename")
         ]
 
+    # 有已知身份就只等该项；首次按列表顺序选快照外且前缀匹配的新项。
+    # 截单模式的多候选歧义检查在 wait_until_downloadable 中完成。
     def _select_export_task(
         self,
         tasks: list[TaskCenterItem],
@@ -243,6 +248,7 @@ class ExportTaskCenter:
         return self._unique_path(self.settings.downloads_dir, filename)
 
     @staticmethod
+    # 使用基础文件名，重名追加时间和计数，保留旧下载文件。
     def _unique_path(directory: Path, filename: str) -> Path:
         directory.mkdir(parents=True, exist_ok=True)
         basename = Path(filename).name

@@ -1,3 +1,4 @@
+// 浏览器回归：截单配置、状态及文件加载入口；使用模拟服务，不提交真实截单。
 'use strict';
 const path=require('path');
 const T=require('./test-helpers.js');

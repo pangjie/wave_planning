@@ -1,3 +1,4 @@
+# 回归范围：页面、上下文、驱动清理失败不覆盖已确认业务结果。
 """Completed operations survive page, context and driver cleanup faults."""
 
 import json

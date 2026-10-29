@@ -1,3 +1,5 @@
+# 任务协调层：串行占用浏览器、持久化进度、保留业务结果，并调度显式重试/跟随打印。
+# JobRecord 是业务记录；tasks 是正在执行/清理的协程。终态记录不等于浏览器已释放。
 from __future__ import annotations
 
 import asyncio
@@ -105,7 +107,8 @@ class JobManager:
             if settings
             else Path(__file__).resolve().parents[3] / "data"
         )
-        # 任务日志持久化（仅当天）：data/jobs.json；测试未提供 settings 时不落盘
+        # 任务历史在 data/jobs.json；普通历史按日保留，重试/截单/联程等按 _retain 延长。
+        # 测试未提供 settings 时不落盘。
         self._jobs_file = self.wave_records_dir / "jobs.json"
         self._persist_enabled = settings is not None
         self._last_persist = 0.0
@@ -316,6 +319,9 @@ class JobManager:
         return json.dumps([segment["channel"], segment["seg_name"]], ensure_ascii=False)
 
     def retry(self, job_id: str) -> JobRecord:
+        # 方案 B：创建新轮次，沿用原始输入和可靠结果，不读取当前网页上的新规划。
+        # pending/searching 未进入生产提交，可续跑；done 跳过；uncertain 必须人工核对。
+        # 先持久化父子关联再调度，保证重复点击/HTTP 响应丢失不会创建两个重试任务。
         original = self.jobs.get(job_id)
         if original is None:
             raise ValueError("原任务不存在。")
@@ -406,6 +412,7 @@ class JobManager:
             raise
 
     def arm_follow_print(self, job_id: str) -> None:
+        # “生成完成”和“规划文件已保存”是两道独立门槛；只有二者都满足才允许打印。
         job = self.jobs[job_id]
         if not job.follow_print or job.status != "succeeded" or not job.planning_export_file or job.retry_job_id:
             return
@@ -508,6 +515,8 @@ class JobManager:
         return job
 
     async def _execute(self, job_id: str) -> None:
+        # progress 不只是日志接口：检查点事件会同步保存，可抛错阻止下一步操作。
+        # 因此自动化代码必须 await progress，不能把关键事件改成后台 fire-and-forget。
         job = self.jobs[job_id]
 
         async def progress(stage: str, message: str) -> None:
@@ -529,6 +538,7 @@ class JobManager:
                     job.current_node = key
                     job.node_states[key] = "searching"
                 elif stage == "wave_submitting":
+                    # 真正点击提交前写 uncertain；进程若此时退出，也不能直接重复提交。
                     if job.current_node is None:
                         raise ValueError("提交缺少分段检查点")
                     job.node_states[job.current_node] = "uncertain"

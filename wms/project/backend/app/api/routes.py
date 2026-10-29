@@ -1,3 +1,5 @@
+# HTTP 边界：校验请求、调用服务层、返回任务/文件；不直接驱动 WMS 页面。
+# 生成的计划身份和快照必须绑定，文件保存成功才可解锁跟随打印。
 from __future__ import annotations
 
 import re
@@ -49,6 +51,7 @@ async def retry_schedule(run_id: str, request: Request):
 
 
 @router.get("/schedule/runs/{run_id}/file")
+# 提供已完成截单的合并文件；点击加载与直接下载共用此入口。
 async def schedule_file(run_id: str, request: Request):
     try:
         path = request.app.state.cutoff_scheduler.file(run_id)
@@ -142,6 +145,9 @@ class CreateJobRequest(BaseModel):
 
     def validate_wave_limit(self, config: AutomationConfig) -> None:
         """数量限制与执行器共用服务启动快照；普通结构校验不再读取磁盘。"""
+        if self.mode == "generate_waves":
+            from app.services.job_plans import validate_generation_segments
+            validate_generation_segments(self.segments, config.wave_generation.multi_search_max_lines)
         if self.follow_print:
             table = next(s for s in self.plan_snapshot["workbook"]["sheets"] if s["name"] == "波次表")
             if sum(r["kind"] in {"paper", "mix"} for r in table["waveRefs"]) > config.wave_printing.max_selected_waves:
@@ -190,6 +196,7 @@ async def clear_wave_records(request: Request, batch_id: str | None = None, plan
 
 
 @router.post("/jobs", response_model=JobRecord, status_code=status.HTTP_202_ACCEPTED)
+# 按启动配置整批校验后交给管理器；只有管理器负责调度执行。
 async def create_job(
     payload: CreateJobRequest,
     request: Request,
@@ -251,6 +258,7 @@ async def cancel_follow_print(job_id: str, manager: JobManager = Depends(get_man
 
 
 @router.post("/jobs/{job_id}/retry", response_model=JobRecord, status_code=202)
+# 仅指定原任务，输入和确认节点由管理器恢复，不能重传一份新的分段。
 async def retry_job(job_id: str, payload: RetryJobRequest, manager: JobManager = Depends(get_manager)) -> JobRecord:
     if not payload.confirm_production:
         raise HTTPException(status_code=422, detail="重试需要确认生产操作。")
@@ -263,6 +271,7 @@ async def retry_job(job_id: str, payload: RetryJobRequest, manager: JobManager =
 
 
 @router.get("/jobs/{job_id}/plan")
+# 独立读取提交快照供前端恢复导出，日常轮询不携带整个工作簿。
 async def get_job_plan(job_id: str, manager: JobManager = Depends(get_manager)) -> dict:
     from app.services.job_plans import read_plan
     job = manager.get(job_id)

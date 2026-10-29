@@ -115,7 +115,7 @@ T.withChrome({}, async chrome => {
     var urowCountTxt = Array.prototype.map.call(document.querySelectorAll('#dash .urowe .type-count'), function(el){ return el.textContent; }).join('|');
     var urowOrder = document.querySelector('#dash .urowe td.num').textContent;
     var th0w = ths[0].getBoundingClientRect().width;
-    var midW = [1,2,3,4,5,6].map(function(i){ return Math.round(ths[i].getBoundingClientRect().width); });
+    var midW = [1,2,3,4,5,6,7].map(function(i){ return Math.round(ths[i].getBoundingClientRect().width); });
     return JSON.stringify({
       cols: cells.length,
       order: cells[1].textContent,
@@ -135,18 +135,18 @@ T.withChrome({}, async chrome => {
     });
   })()`);
   const sc = JSON.parse(struct);
-  assert(sc.cols === 11 && sc.order === '1318', '合并表结构错误');
+  assert(sc.cols === 12 && sc.order === '1318', '合并表结构错误');
   assert(sc.head.indexOf('渠道') !== -1 && sc.head.indexOf('爆品') !== -1 && sc.head.indexOf('单件') !== -1 &&
     sc.head.indexOf('多件') !== -1 && sc.head.indexOf('混件') !== -1, '表头类型名错误: ' + sc.head);
   assert(sc.head.indexOf('单件paper') === -1, '表头仍显示单件paper: ' + sc.head);
   assert(sc.head.indexOf('多件段') === -1 && sc.head.indexOf('混件段') === -1, '表头应为多件/混件而非多件段/混件段: ' + sc.head);
-  assert(sc.paperShown.indexOf('单件·283·46') !== -1 && sc.paperShown.indexOf('单件paper') === -1, '单件paper 显示名或统计顺序错误: ' + sc.paperShown);
+  assert(sc.paperShown.indexOf('单件·850·402') !== -1 && sc.paperShown.indexOf('单件paper') === -1, '单件paper 显示名或统计顺序错误: ' + sc.paperShown);
   assert(sc.paperKey === 'SwiftX|单件paper-1', '内部键名被改动（影响导出）: ' + sc.paperKey);
   assert(sc.absorbTxt === '关闭', '吸收列应只显示档位名（无数字）: ' + sc.absorbTxt);
   assert(sc.wcColor !== sc.ocColor, '波数/单量未着色区分');
-  assert(Math.abs(sc.th0w - sc.tableW * .10) < 1, '渠道列应占表格 10%: ' + JSON.stringify(sc));
+  assert(Math.abs(sc.th0w - sc.tableW * .09) < 1, '渠道列应占表格 9%: ' + JSON.stringify(sc));
   assert(sc.midW.every(w => Math.abs(w - sc.tableW * .06) < 1), '六个参数/计数列应各占 6% 且等宽: ' + JSON.stringify(sc.midW));
-  assert(sc.head.indexOf('爆品线') === -1 && sc.head.indexOf('容量') < sc.head.indexOf('爆品'), '列顺序应为 渠道/订单/容量/爆品/…: ' + sc.head);
+  assert(sc.head.includes('爆品容量|爆品|单件|多件|混件'), '参数列顺序错误: ' + sc.head);
   assert(sc.layout === 'fixed', '表格未使用固定布局');
   assert(sc.headHasCount === false, '表头类型列不应再显示波/单统计');
   assert(sc.urowCountTxt.indexOf('波') !== -1 && sc.urowCountTxt.split('|').length === 4, '波/单统计应在统一行类型列: ' + sc.urowCountTxt);
@@ -162,7 +162,7 @@ T.withChrome({}, async chrome => {
   const al = JSON.parse(align);
   assert(Math.abs(al.gap - 14) < 1 && al.sideW === 250, '侧栏/主栏应间隔 14px: ' + JSON.stringify(al));
   assert(Math.abs(al.topGap) < 1 && Math.abs(al.tableW - al.matrixW) < 1, '主栏应顶端对齐且表格填满矩阵容器: ' + JSON.stringify(al));
-  console.log('✔ 导入：11 列结构；250px 侧栏与主栏对齐，表格填满矩阵容器');
+  console.log('✔ 导入：12 列结构；250px 侧栏与主栏对齐，表格填满矩阵容器');
 
   /* 2.5 渠道标签（p10k 等宽风格）、行内留空、否掉变色 */
   const tag = await evalJs(`(function(){

@@ -1,3 +1,4 @@
+# 回归范围：浏览器公共辅助逻辑及下载状态清理。
 import asyncio
 import sqlite3
 

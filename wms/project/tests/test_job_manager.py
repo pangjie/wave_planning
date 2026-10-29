@@ -1,3 +1,4 @@
+# 回归范围：任务执行、状态转换、取消及浏览器占用互斥。
 import asyncio
 from datetime import datetime
 from unittest.mock import AsyncMock

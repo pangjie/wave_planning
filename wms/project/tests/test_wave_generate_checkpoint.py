@@ -1,3 +1,4 @@
+# 回归范围：确认波次后的本地保存故障不得变成可重复执行的失败。
 """Confirmed WMS results must not be reclassified by a local save failure."""
 
 import json

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 桌面打包入口：使用已有控制台构建产物和项目虚拟环境，再做本地签名。
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"

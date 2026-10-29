@@ -1,3 +1,4 @@
+# 回归范围：API 请求校验、任务创建/查询及文件响应。
 import pytest
 from unittest.mock import AsyncMock, Mock
 

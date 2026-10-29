@@ -1,3 +1,4 @@
+// 浏览器回归：生成按钮的跟随打印开关和关联任务展示；生产操作由模拟 API 替代。
 'use strict';
 const path=require('path');
 const T=require('./test-helpers.js');

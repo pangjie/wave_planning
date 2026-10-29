@@ -1,3 +1,4 @@
+# 回归范围：复制临时项目并替代安装器，验证环境复用和安装参数。
 """Installer contract tests: copied project, fake installer, no package downloads."""
 import json
 import os

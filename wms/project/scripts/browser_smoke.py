@@ -1,3 +1,4 @@
+# 部署自检入口：只验证配置的浏览器能启动和退出，不访问生产 WMS。
 """Launch the configured browser without visiting the production WMS site."""
 
 from __future__ import annotations

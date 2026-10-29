@@ -1,3 +1,4 @@
+# 回归范围：模拟拣货页面，验证完成判断与异常恢复。
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
 

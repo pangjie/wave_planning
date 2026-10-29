@@ -1,3 +1,4 @@
+# 回归范围：业务确认后的清理故障不得触发重复生产操作。
 """Confirmed business results survive failing page cleanup; no real WMS is used."""
 
 import asyncio

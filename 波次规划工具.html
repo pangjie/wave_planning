@@ -13,6 +13,9 @@
 <title>波次规划工具</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230b0f14'/%3E%3Cpath d='M10 34c8-10 12-10 20 0s12 10 24-2' stroke='%237ee787' stroke-width='5' fill='none' stroke-linecap='round'/%3E%3Cpath d='M10 46c8-10 12-10 20 0s12 10 24-2' stroke='%2358a6ff' stroke-width='5' fill='none' stroke-linecap='round' opacity='.55'/%3E%3C/svg%3E">
 <style>
+/* 样式入口：主题变量 → 整体布局 → 控件/日志 → 规划表格 → 窄屏适配。
+   主题只改表现，不影响渠道身份和激活状态；业务状态由 app.js 的 class/属性驱动。
+   修改本文件后运行 planner/build.py，同步单文件版和服务使用的 frontend/dist。 */
 :root{
   --bg:#1c1730;
   --bg2:#251e3c;
@@ -157,6 +160,7 @@ button:focus-visible,[role="button"]:focus-visible,[role="checkbox"]:focus-visib
 @keyframes title-flow{to{background-position:240% 0}}
 
 /* Shared buttons and menus */
+/* 顶栏各动作复用 .bb；主题菜单需高于主内容层，不能被父容器 overflow 裁切。 */
 .bb{
   position:relative;isolation:isolate;overflow:hidden;
   min-height:40px;padding:0 14px;border:1px solid var(--line);border-radius:10px;
@@ -201,6 +205,8 @@ button:focus-visible,[role="button"]:focus-visible,[role="checkbox"]:focus-visib
 @keyframes menu-pop{from{opacity:0;transform:translateY(-7px) scale(.96)}to{opacity:1;transform:none}}
 
 /* Sidebar */
+/* 侧栏日志通过 flex 占据剩余高度；min-height/overflow 决定内容由日志自身滚动，
+   而不是把操作按钮挤出容器。窄屏的日志高度另在媒体查询中定义。 */
 .side{
   flex:0 0 250px;width:250px;min-width:0;padding:18px 15px 14px;
   display:flex;flex-direction:column;gap:12px;overflow-x:hidden;overflow-y:auto;
@@ -320,6 +326,8 @@ button:focus-visible,[role="button"]:focus-visible,[role="checkbox"]:focus-visib
 @keyframes metric-roll-pop{0%{opacity:.48;transform:translateY(8px) scale(.94);filter:blur(1px)}52%{opacity:1;transform:translateY(-2px) scale(1.035);filter:none}100%{transform:none}}
 
 /* Planning matrix */
+/* .twrap 是表格滚动容器。表头 top:0，统一调整行 top:48px，后者必须等于表头高度。
+   两行分别使用 z-index 5/4 和不透明背景，避免滚动渠道内容从下方透出。 */
 .twrap{flex:1;width:100%;max-width:100%;min-height:0;overflow:auto;scrollbar-gutter:stable;background:color-mix(in srgb,var(--bg) 34%,transparent)}
 .pt{width:100%;min-width:1180px;border-spacing:0;border-collapse:separate;table-layout:fixed;background:transparent}
 .pt th,.pt td{height:48px;padding:8px 9px;border-right:1px solid color-mix(in srgb,var(--line) 80%,transparent);border-bottom:1px solid color-mix(in srgb,var(--line) 80%,transparent);text-align:center;vertical-align:middle;white-space:nowrap}
@@ -328,12 +336,13 @@ button:focus-visible,[role="button"]:focus-visible,[role="checkbox"]:focus-visib
 .pt th.left,.pt td.left{text-align:left}.pt th.left{padding-left:12px}
 .pt th.type-head{text-align:center}.pt th.type-head .tog,.pt th.type-head .type-tog{vertical-align:middle}
 .pt tbody .prow{transition:background .15s,opacity .15s}.pt tbody .prow:hover{background:linear-gradient(90deg,color-mix(in srgb,var(--accent) 9%,transparent),color-mix(in srgb,var(--accent2) 4%,transparent),color-mix(in srgb,var(--accent) 7%,transparent))}.pt tbody .prow:hover td{box-shadow:inset 0 1px 0 color-mix(in srgb,var(--accent) 24%,transparent),inset 0 -1px 0 color-mix(in srgb,var(--accent2) 14%,transparent)}
-.pt .prow td{height:68px;padding-top:11px;padding-bottom:11px;vertical-align:top}.pt .prow td:not(.segtd){padding-top:20px}
+.pt .prow td{height:60px;padding-top:8px;padding-bottom:8px;vertical-align:top}.pt .prow td:not(.segtd){padding-top:16px}
+.pt td.left{padding-left:6px;padding-right:6px}
 .pt .prow.off{opacity:.48}.pt .prow.off:hover{opacity:.62}
 .pt .urowe{background:linear-gradient(90deg,color-mix(in srgb,var(--accent) 8%,var(--surface)),color-mix(in srgb,var(--surface) 78%,transparent))}.pt .urowe td{position:sticky;top:48px;z-index:4;height:51px;border-bottom-color:color-mix(in srgb,var(--accent) 28%,var(--line));background:linear-gradient(90deg,color-mix(in srgb,var(--surface) 92%,var(--accent) 8%),color-mix(in srgb,var(--surface) 96%,var(--accent2) 4%));color:var(--dim);box-shadow:0 1px 0 color-mix(in srgb,var(--accent) 28%,var(--line)),0 8px 18px color-mix(in srgb,var(--shadow) 18%,transparent)}
 .pt .urowe td:first-child{color:var(--fg);font-weight:800;letter-spacing:.3px}
 .pt td.num{color:var(--ok);font-size:15px;font-weight:900;font-variant-numeric:tabular-nums;text-shadow:0 0 15px color-mix(in srgb,var(--ok) 28%,transparent)}
-.pt td.segtd{padding:8px 7px;text-align:left;white-space:normal;vertical-align:middle}
+.pt td.segtd{padding:6px 7px;text-align:left;white-space:normal;vertical-align:middle}
 .pt .urowe td.segtd{text-align:center}
 .type-count{display:inline-flex;align-items:baseline;gap:3px;padding:5px 7px;border-radius:7px;background:color-mix(in srgb,var(--bg) 37%,transparent);font-size:12px}.type-count .wc{color:var(--accent);font-weight:900}.type-count .oc{color:var(--ok);font-weight:850}
 
@@ -363,6 +372,8 @@ button:focus-visible,[role="button"]:focus-visible,[role="checkbox"]:focus-visib
 .tog:hover{border-color:var(--accent2)}.type-tog{vertical-align:middle;cursor:pointer;user-select:none}
 
 .stepper{display:inline-flex;align-items:center;justify-content:center;gap:2px;min-width:64px}
+.pt td:has(> .stepper){padding-left:3px;padding-right:3px}
+.pt td:has(> .stepper) > small{display:block;font-size:11px;white-space:normal;margin-top:4px}
 .arr{
   width:18px;height:18px;display:inline-grid;place-items:center;border:1px solid transparent;border-radius:6px;
   color:var(--accent);font-size:11px;font-weight:900;cursor:pointer;user-select:none;transition:background .14s,border-color .14s,color .14s;
@@ -372,7 +383,7 @@ button:focus-visible,[role="button"]:focus-visible,[role="checkbox"]:focus-visib
 .aval{display:inline-flex;align-items:center;justify-content:center;min-width:48px;padding:5px 7px;border:1px solid color-mix(in srgb,var(--warn) 28%,var(--line));border-radius:7px;background:color-mix(in srgb,var(--warn) 7%,transparent);color:var(--warn);font-size:12px;font-weight:900;cursor:pointer;user-select:none;transition:background .14s,border-color .14s}.aval:hover{background:color-mix(in srgb,var(--warn) 15%,transparent);border-color:var(--warn)}
 .prow.off .arr,.prow.off .pval,.prow.off .aval{color:var(--dim)}.prow.off .aval{border-color:var(--line);background:transparent}
 .seg-line{
-  position:relative;width:max-content;max-width:100%;min-height:31px;margin:3px 0;padding:5px 22px 5px 9px;
+  position:relative;width:max-content;max-width:100%;min-height:29px;margin:2px 0;padding:4px 22px 4px 9px;
   display:flex;align-items:center;overflow:hidden;border:1px solid color-mix(in srgb,var(--accent) 18%,var(--line));border-radius:8px;
   background:color-mix(in srgb,var(--accent) 6%,transparent);cursor:pointer;user-select:none;
   transition:background .14s,border-color .14s,transform .14s,opacity .14s;
@@ -390,6 +401,8 @@ button:focus-visible,[role="button"]:focus-visible,[role="checkbox"]:focus-visib
 /* Task status strip */
 .wms-panel{flex:0 0 auto;min-width:0;background:color-mix(in srgb,var(--surface2) 82%,transparent);border-top:1px solid var(--line)}.wms-panel[hidden]{display:none}.wms-panel-bar{min-height:42px;padding:7px 14px;display:flex;align-items:center;gap:10px;font-size:13px}.wms-state{padding:4px 7px;border-radius:6px;background:var(--surface);font-weight:900;white-space:nowrap}.wms-state.running,.wms-state.queued{color:var(--accent2)}.wms-state.succeeded{color:var(--ok)}.wms-state.partial{color:var(--warn)}.wms-state.failed{color:var(--err)}.wms-state.cancelled{color:var(--dim)}.wms-msg{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--dim);white-space:nowrap}.spacer{flex:1}
 
+/* 窄屏切换为页面纵向滚动；桌面版则让表格、侧栏各自滚动。
+   调整 overflow/min-height 时须同时验证日志可见区域和两行吸顶，不能只看整页截图。 */
 /* Responsive */
 @media(max-width:1180px){
   .shell{padding:12px}.side{flex-basis:236px;width:236px}.dash-summary{grid-template-columns:1fr}.summary-title{padding:5px 8px}.metric-grid{grid-template-columns:repeat(5,minmax(0,1fr))}
@@ -410,7 +423,10 @@ button:focus-visible,[role="button"]:focus-visible,[role="checkbox"]:focus-visib
 </style>
 </head>
 <body data-theme="dracula">
+<!-- DOM 契约：id 供 app.js 绑定事件与更新状态，data-* 供委托事件识别目标。
+     更改按钮、面板或表格容器名称时需同步 app.js 和 UI 回归测试。 -->
 <script>
+// 在主体内容绘制前恢复主题，避免首屏先闪过默认色；不可用的本地存储不阻止启动。
 (function () {
   try {
     var savedTheme = localStorage.getItem('wave-planner-theme');
@@ -421,6 +437,7 @@ button:focus-visible,[role="button"]:focus-visible,[role="checkbox"]:focus-visib
 })();
 </script>
 <div class="shell">
+  <!-- 顶栏面板开关共用按钮形制；日志详情与定时配置复用右侧主内容区域。 -->
   <header class="app-header">
     <div class="brand"><strong>波次规划工具</strong></div>
     <div class="header-actions">
@@ -491,7 +508,7 @@ button:focus-visible,[role="button"]:focus-visible,[role="checkbox"]:focus-visib
     <main class="term">
       <section id="logDetailsPanel" class="schedule-panel" hidden>
         <h2>日志详情</h2>
-        <p id="logDetailsStatus" role="status">按任务展示完整过程；执行中的记录自动更新。</p>
+        <p id="logDetailsStatus" role="status">任务与事件均按时间倒序，最新在上；时间为本机时区，执行中的记录自动更新。</p>
         <div id="logDetailsContent"></div>
       </section>
       <section id="schedulePanel" class="schedule-panel" hidden>
@@ -549,9 +566,15 @@ t.sheetStubs=true}if(t.type=="array"){t.type="binary";var a=xk(e,t);t.type="arra
 </script>
 <script>
 /* =============================================================
- * 波次规划工具 · 核心逻辑（纯计算不依赖 DOM；导出下载函数例外，仅依赖 XLSX 全局）
+ * 波次规划工具 · 核心逻辑（分段计算不依赖 DOM；读表依赖 XLSX，浏览器下载依赖 DOM）
  * ============================================================= */
 'use strict';
+
+/* 数据流：Excel 行 → 去重订单 records → 渠道分析 → 激活分段 → 工作表规格 → XLSX。
+ * orderNo 是订单身份；count/orderCount 是订单数，qty/pickQty 是商品件数，不能混用。
+ * 内部 kind（hot/paper/multi/mix）与页面展示文字不同，业务判断必须使用 kind。
+ * 分析结果保留关闭的分段；实际导出及激活统计必须同时检查渠道与分段开关。
+ */
 
 /* ---------- 1. 领域常量 ---------- */
 var REQUIRED_COLS = [
@@ -589,7 +612,7 @@ var FIXED_MERGED_ORDER = ['CBT', '普通', 'CBS'];
 function segDisplayName(name) {
   return String(name).replace(/-\d+$/, '').replace(/\d+$/, '');
 }
-var DEFAULT_UNIFIED = { hotLine: 10, capacity: 400, multiSegs: 1, mixSegs: 1, absorb: 1 };
+var DEFAULT_UNIFIED = { hotLine: 10, capacity: 400, paperSegs: 1, multiSegs: 1, mixSegs: 1, absorb: 1 };
 /* 爆品单SKU分段超过多项搜索单次上限（700 行）时按订单数均分拆分；与波次容量设置无关 */
 var HOT_SINGLE_SKU_SPLIT_LIMIT = 700;
 var CHANNEL_COLORS = {
@@ -604,6 +627,8 @@ var USPS_H_STCS = new Set('037 063 075 116 120 121 166 184 185 186 187 190 191 2
 CHANNEL_COLORS['USPS-H'] = 'F5E4D4';
 CHANNEL_COLORS['USPS-G'] = 'E6F4E6';
 function uspsType(raw) {
+  // 先校验完整 PIC 的长度和校验位，再读 STC；带 420 邮编前缀时必须唯一解出 PIC。
+  // 非文本、校验失败或不在 H 清单内均归 G，不凭不完整号码推测 H。
   if (typeof raw !== 'string') return 'USPS-G';
   function valid(pic) {
     if (!/^9[2345](?:[0-9]{20}|[0-9]{24})$/.test(pic)) return false;
@@ -620,6 +645,7 @@ function uspsType(raw) {
   return pic && USPS_H_STCS.has(pic.slice(2, 5)) ? 'USPS-H' : 'USPS-G';
 }
 function applyUspsSubdivision(records, enabled) {
+  // 原渠道只记录一次，保证反复切换 H/G 时可恢复 USPS，而非把细分结果当原始渠道。
   records.forEach(function (r) {
     if (!r.baseChannelId) r.baseChannelId = r.channelId;
     r.channelId = enabled && r.baseChannelId === 'USPS' ? (r.uspsType || 'USPS-G') : r.baseChannelId;
@@ -711,6 +737,8 @@ function trackingChannel(t) {
 
 /* ---------- 5. 数据行 -> 订单记录 ---------- */
 function buildRecords(dataRows, headerMap) {
+  // 同号只保留首次总件数并合并 SKU 集合，不能把重复行的件数再次累加。
+  // 缺单号的行暂以 Excel 行号参与分析；这不是可提交到 WMS 的真实订单号。
   var records = [];
   var byOrder = new Map(); // 出库单号 -> 订单记录（多行订单合并）
   var qtyMap = Object.create(null); // 出库单号 -> 总数量（首次遇到，不包含继承键）
@@ -766,7 +794,10 @@ function buildRecords(dataRows, headerMap) {
 /* 输入 items 的权重取 item.count；返回 k 个子序列（保持顺序，尽量使最大段和最轻）。
    k > items.length 时，空段补在末尾。 */
 function linearPartition(items, k) {
+  // 元素（通常为整个 SKU）不可拆；优化目标是最小化最重分段的订单数，非拣货件数。
+  // 保留输入顺序才能让导出的 SKU 序列与分段边界一致。
   var n = items.length;
+  if(k===1) return [items.slice()];
   var result = [];
   if (n === 0) { for (var e = 0; e < k; e++) result.push([]); return result; }
   var jmax = Math.min(k, n);
@@ -775,6 +806,8 @@ function linearPartition(items, k) {
   for (var i = 0; i < n; i++) pref[i + 1] = pref[i] + w[i];
   var INF = 1e18;
   var dp = [], opt = [];
+  // dp[r][j]：前 r 个元素分成 j 段时的最小“最大段重”；opt 记录最后一段起点。
+  // 转移取 max(前 j-1 段最优值, 当前段权重)，再对所有合法切点取最小值。
   for (var r = 0; r <= n; r++) {
     dp.push(new Float64Array(jmax + 1).fill(INF));
     opt.push(new Int32Array(jmax + 1));
@@ -783,6 +816,7 @@ function linearPartition(items, k) {
   var j;
   var solve;
   solve = function (l, r, ml, mr) {
+    // 利用最优切点的单调性缩窄左右区间；权重来自非负订单数，不能改为带负权指标。
     if (l > r) return;
     var mid = (l + r) >> 1;
     var lo = Math.max(ml, j - 1, 0);
@@ -843,6 +877,8 @@ function partitionByCapacity(items, W) {
 
 /* ---------- 7. 混件连通组件 ---------- */
 function buildComponents(groups) {
+  // 共享任意 SKU 的组具有传递关系：A∩B、B∩C 非空时，A/B/C 必须作为整体分配。
+  // 因此不能仅按每个订单的首个 SKU 分组，否则混件的关联 SKU 会被拆散。
   var n = groups.length;
   var parent = [];
   for (var i = 0; i < n; i++) parent.push(i);
@@ -917,6 +953,7 @@ function discreteAllocate(components, N) {
 
 /* ---------- 8. 最终分段 ---------- */
 function finalizeSeg(kind, name, orderNos, skuPool, qtyMap) {
+  // 最终段统一在这里计算订单数/拣货件数，SKU 池用于展示与导出，不能替代订单清单。
   var pickQty = 0;
   for (var i = 0; i < orderNos.length; i++) pickQty += (qtyMap[orderNos[i]] || 0);
   return {
@@ -984,6 +1021,10 @@ function slotsToMixSegs(slots, qtyMap) {
 
 /* ---------- 9. 单渠道分析 ---------- */
 function analyzeChannel(id, records, qtyMap, p) {
+  // 先按原始品种类型建池，再按吸收档位迁移订单；迁移后才生成最终分段和索引。
+  // 返回的原始分类统计与最终分段统计口径不同：被吸收的多件仍是原始多件订单。
+  p=Object.assign({},DEFAULT_UNIFIED,p);
+  if(!Number.isSafeInteger(p.paperSegs) || p.paperSegs<1) p.paperSegs=1;
   var singleMap = new Map(), multiMap = new Map(), mixGroups = new Map();
   var singleCount = 0, multiCount = 0, mixCount = 0;
   records.forEach(function (r) {
@@ -1036,12 +1077,12 @@ function analyzeChannel(id, records, qtyMap, p) {
   hotSeq.forEach(function (g) { hotOrderCount += g.count; });
   paperSeq.forEach(function (g) { paperOrderCount += g.count; });
 
-  /* 爆品 / 单件paper 容量分段 */
+  /* 容量仅作用于爆品；单件按指定段数连续均衡，SKU 不拆散。 */
   var hotSegs = splitOversizedHotSegments(
     segFromItems('hot', '爆品', partitionByCapacity(hotSeq, p.capacity), qtyMap),
     qtyMap
   );
-  var paperSegs = segFromItems('paper', '单件paper-', partitionByCapacity(paperSeq, p.capacity), qtyMap);
+  var paperSegs = segFromItems('paper', '单件paper-', linearPartition(paperSeq, Math.min(p.paperSegs,Math.max(1,paperSeq.length))), qtyMap);
 
   /* 原始混件组件与离散分段 */
   var mixComponents = buildComponents(mixSeq);
@@ -1155,6 +1196,14 @@ function analyzeChannel(id, records, qtyMap, p) {
   finalMultiSegs.forEach(function (seg) { seg.skuPool.forEach(function (sp) { multiSegMap.set(sp.sku, seg.name); }); });
 
   var segments = hotSegs.concat(finalPaperSegs, finalMultiSegs, finalMixSegs);
+  // 最后一道守恒检查：本渠道每个订单必须且只能出现一次，不能只比较总数。
+  // 总数相等仍可能同时发生漏单和重单；集合成员检查也能发现跨渠道混入。
+  var expectedOrders=new Set(records.map(function(r){return r.orderNo;})), assignedOrders=new Set();
+  segments.forEach(function(seg){seg.orderNos.forEach(function(no){
+    if(!expectedOrders.has(no)||assignedOrders.has(no)) throw new Error(id+' 分段订单重复或不属于当前渠道：'+no);
+    assignedOrders.add(no);
+  });});
+  if(assignedOrders.size!==expectedOrders.size) throw new Error(id+' 分段订单不完整，请检查规划参数');
   var segByName = new Map();
   segments.forEach(function (s) { segByName.set(s.name, s); });
   var byType = { hot: hotSegs, paper: finalPaperSegs, multi: finalMultiSegs, mix: finalMixSegs };
@@ -1163,7 +1212,7 @@ function analyzeChannel(id, records, qtyMap, p) {
     id: id, name: id,
     total: records.length,
     singleCount: singleCount, multiCount: multiCount, mixCount: mixCount,
-    params: { hotLine: p.hotLine, capacity: p.capacity, multiSegs: p.multiSegs, mixSegs: p.mixSegs, absorb: p.absorb },
+    params: { hotLine: p.hotLine, capacity: p.capacity, paperSegs: p.paperSegs, multiSegs: p.multiSegs, mixSegs: p.mixSegs, absorb: p.absorb },
     hotSeq: hotSeq, paperSeq: paperSeq, singleSeq: singleSeq, multiSeq: multiSeq, mixSeq: mixSeq,
     hotSkuCount: hotSeq.length, hotOrderCount: hotOrderCount,
     paperSkuCount: paperSeq.length, paperOrderCount: paperOrderCount,
@@ -1184,6 +1233,7 @@ function sortByDefault(chans) {
   return chans;
 }
 function sortByFixed(chans, mode) {
+  // 固定业务顺序与“空渠道沉底”同时生效；未识别始终最后，H/G 占据 USPS 的位置。
   var fixed = mode === 'merged' ? FIXED_MERGED_ORDER : uspsChannelList(FIXED_CHANNEL_ORDER, chans.some(function (ch) { return ch.id === 'USPS-H' || ch.id === 'USPS-G'; }));
   var rank = new Map();
   fixed.forEach(function (id, i) { rank.set(id, i); });
@@ -1225,9 +1275,12 @@ function buildClassSeq(records) {
 
 /* ---------- 12. 全量分析 ---------- */
 function analyze(records, qtyMap, mode, paramsFor, uspsSplit) {
+  // 拆分保留识别渠道；归并将 CBT/CBS 外的订单放入普通（包含 USPS-H/G）。
+  // 常驻渠道即使无单也保留，以便界面稳定展示和参数调整。
   var resolver = typeof paramsFor === 'function' ? paramsFor : function (id) {
     return (paramsFor && paramsFor[id]) || {
       hotLine: DEFAULT_UNIFIED.hotLine, capacity: DEFAULT_UNIFIED.capacity,
+      paperSegs: DEFAULT_UNIFIED.paperSegs,
       multiSegs: DEFAULT_UNIFIED.multiSegs, mixSegs: DEFAULT_UNIFIED.mixSegs, absorb: DEFAULT_UNIFIED.absorb
     };
   };
@@ -1274,6 +1327,8 @@ function selectedOrderCount(analysis, channelSelected, segSelected) {
   }, 0);
 }
 function selectedSkuCount(analysis, records, channelSelected, segSelected) {
+  // 先得到激活订单集合，再遍历订单的全部 SKU 去重；不能累加分段 SKU 数，
+  // 也不能只取 sku1，因为跨分段共享 SKU 和混件中的额外 SKU 都会影响结果。
   var orderNos = new Set();
   analysis.channels.forEach(function (ch) {
     if (!channelSelected.has(ch.id)) return;
@@ -1301,6 +1356,8 @@ function channelEnabledByDefault(ch) {
   return Boolean(ch && ch.total > 0 && ch.id !== '未识别');
 }
 function collectOrdinaryAbsorbedOrderNos(baseAnalysis, channelSelected, segSelected) {
+  // 来源必须是未进化的分析结果。渠道关闭或分段关闭任一成立即可被普通吸收；
+  // CBT/CBS 永不参与，USPS-H/G 与其他拆分渠道遵循同一规则。
   var absorbed = new Set();
   baseAnalysis.channels.forEach(function (ch) {
     if (ch.id === 'CBT' || ch.id === 'CBS' || ch.id === '未识别' || ch.id === '普通') return;
@@ -1313,6 +1370,8 @@ function collectOrdinaryAbsorbedOrderNos(baseAnalysis, channelSelected, segSelec
   return absorbed;
 }
 function buildOrdinaryEvolvedAnalysis(baseAnalysis, records, qtyMap, paramsFor, channelSelected, segSelected) {
+  // 只重建普通的订单池，不从源分析中物理删除订单。源分段关闭后不参与导出，
+  // 普通再分段后参与导出；这样退化时恢复源数据，不需要反向修改原始订单。
   var absorbed = collectOrdinaryAbsorbedOrderNos(baseAnalysis, channelSelected, segSelected);
   var ordinaryRecords = records.filter(function (record) {
     return record.channelId === '未识别' || absorbed.has(record.orderNo);
@@ -1328,6 +1387,7 @@ function buildOrdinaryEvolvedAnalysis(baseAnalysis, records, qtyMap, paramsFor, 
  * 13. 导出：9 个工作表
  * ============================================================= */
 function collectBlocks(channels, selected, segSelected) {
+  // 工作簿各表共用此激活口径；只关分段或只关渠道都会排除对应订单。
   var blocks = [];
   channels.forEach(function (ch) {
     if (!selected.has(ch.id)) return;
@@ -1448,6 +1508,8 @@ function sheetGroupSkuPool(blocks) {
 
 /* ---- 工作表三：波次表 ---- */
 function sheetWaveTable(blocks, waveNos) {
+  // waveRefs 保留内部渠道、分段身份及行号用于回填；显示为 USPS 的 H/G 行
+  // 仍必须有不同的内部身份，不能用导出后的显示渠道反查生成结果。
   var header = ['渠道类型', '姓名', '波次号', '类型', '分发时间', 'SKU数量', '应拣单数', '应拣件数', '结束时间'];
   var aoa = [header.slice()], styles = [], waveRefs = [];
   for (var c = 0; c < 9; c++) styles.push({ r: 0, c: c, s: { font: { bold: true }, alignment: { horizontal: 'center', vertical: 'center' } } });
@@ -1495,7 +1557,8 @@ function sheetChannelStats(channels, selected, segSelected) {
   push('多件', function (c) { return c.multiCount; });
   push('混件', function (c) { return c.mixCount; });
   push('爆品线', function (c) { return c.params.hotLine; });
-  push('波次容量', function (c) { return c.params.capacity; });
+  push('爆品容量', function (c) { return c.params.capacity; });
+  push('单件分段数', function (c) { return c.params.paperSegs; });
   push('多件分段数', function (c) { return c.params.multiSegs; });
   push('混件分段数', function (c) { return c.params.mixSegs; });
   push('混件吸收', function (c) { return c.params.absorb + '-' + ABSORB_NAMES[c.params.absorb]; });
@@ -1535,6 +1598,8 @@ function sheetChannelStats(channels, selected, segSelected) {
 
 /* ---- 工作表五：客户统计（仅统计本次实际导出的订单） ---- */
 function buildCustomerStats(records, blocks) {
+  // 仅统计实际导出的订单；客户身份由名称和代码共同确定，SKU 按客户全局去重。
+  // 渠道构成使用订单原始识别渠道，不以被吸收后的“普通”替代物流来源。
   var selectedOrderNos = new Set();
   blocks.forEach(function (block) {
     block.segs.forEach(function (seg) {
@@ -1701,7 +1766,7 @@ function seqSheetBase(name, selChans, colCount, headers) {
   return { name: name, aoa: aoa, merges: merges, styles: styles, addRows: addRows };
 }
 
-/* ---- 工作表五：单件SKU序列 ---- */
+/* ---- 工作表六：单件SKU序列 ---- */
 function sheetSingleSeq(channels, selected, segSelected) {
   var selChans = channels.filter(function (c) { return selected.has(c.id); });
   var sheet = seqSheetBase('单件SKU序列', selChans, 5, ['排序', 'SKU', '出现数量', '分段', '分段总订单数']);
@@ -1731,7 +1796,7 @@ function sheetSingleSeq(channels, selected, segSelected) {
   return sheet;
 }
 
-/* ---- 工作表六：多件SKU序列 ---- */
+/* ---- 工作表七：多件SKU序列 ---- */
 function sheetMultiSeq(channels, selected, segSelected) {
   var selChans = channels.filter(function (c) { return selected.has(c.id); });
   var sheet = seqSheetBase('多件SKU序列', selChans, 3, ['排序', 'SKU', '订单数量']);
@@ -1750,7 +1815,7 @@ function sheetMultiSeq(channels, selected, segSelected) {
   return sheet;
 }
 
-/* ---- 工作表七：混件SKU序列 ---- */
+/* ---- 工作表八：混件SKU序列 ---- */
 function sheetMixSeq(channels, selected, segSelected) {
   var selChans = channels.filter(function (c) { return selected.has(c.id); });
   var sheet = seqSheetBase('混件SKU序列', selChans, 3, ['排序', 'SKU集合', '订单数量']);
@@ -1793,6 +1858,8 @@ function sheetClassSeq(classSeq) {
 
 /* ---- 汇总导出数据 ---- */
 function buildExport(analysis, exportState) {
+  // 返回工作表规格而不是立即下载。提交任务时会深拷贝此结果作为不可变计划，
+  // 后续即使用户修改页面，也只能向原计划的 waveRefs 回填已确认波次。
   var selected = exportState.channelSelected;
   var segSelected = exportState.segSelected;
   var blocks = collectBlocks(analysis.channels, selected, segSelected);
@@ -1840,6 +1907,8 @@ function crc32(u8) {
   return (crc ^ 0xFFFFFFFF) >>> 0;
 }
 function zipStore(files) {
+  // 使用 ZIP STORE（不压缩）封装 OOXML：CRC、长度和偏移均按 UTF-8 字节计算。
+  // 这是样式完整导出的底层封装，不能把 JS 字符串长度当成 ZIP 字节长度。
   var enc = new TextEncoder();
   var parts = [], offset = 0, central = [];
   function pushU16(v) { var b = new Uint8Array(2); b[0] = v & 255; b[1] = (v >>> 8) & 255; parts.push(b); offset += 2; }
@@ -1990,6 +2059,8 @@ function strEsc(s) {
 }
 
 function sheetToXml(spec, reg) {
+  // reg 是本表已注册的样式网格（grid/nRows/nCols），不是 StyleRegistry 本体。
+  // 网格中的样式 ID 来自跨表共享注册表；先收集所有表，再输出最终 styles.xml。
   var aoa = spec.aoa;
   var out = ['<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
     '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'];
@@ -2245,9 +2316,12 @@ if (typeof module !== 'undefined' && module.exports) {
   function chColor(id) { return CH_TEXT_COLOR[id] || '#c9d1d9'; }
 
   /* ---------- 状态 ---------- */
+  // records/qtyMap 是导入底稿；modes 是两种渠道模式各自的参数、排序和勾选状态。
+  // analysis 是可丢弃的派生缓存。改参数需 invalidate，改源勾选需 invalidateOrdinary。
+  // waveNos 仅属于当前 batch_id + plan_id，不能跨导入或跨规划复用。
   function makeModeState() {
     return {
-      unified: { hotLine: 10, capacity: 400, multiSegs: 1, mixSegs: 1, absorb: 1 },
+      unified: Object.assign({},DEFAULT_UNIFIED),
       per: new Map(),
       order: { sortMode: 'fixed', custom: false, list: [] },
       sel: { channels: new Set(), segs: new Set(), seenChannels: new Set(), seenSegs: new Set() }
@@ -2272,6 +2346,8 @@ if (typeof module !== 'undefined' && module.exports) {
     return Date.now().toString(36) + '-' + Math.random().toString(36).slice(2) + '-' + Math.random().toString(36).slice(2);
   }
   function planIdentity() {
+    // 签名描述“当前规划”，不是订单内容的永久哈希。签名变化就换身份并清波次标记，
+    // 防止同名分段重新分配订单后，把旧任务的波次号误填到新分段。
     if (!state.batchId) state.batchId = newPlanId();
     var m = ms();
     var signature = JSON.stringify([state.batchId, state.merged, state.ordinaryEvolved, state.uspsSplit,
@@ -2310,6 +2386,8 @@ if (typeof module !== 'undefined' && module.exports) {
     return function (id) { return m.per.get(id) || m.unified; };
   }
   function getAnalysis(key) {
+    // 普通渠道依赖源分段最终勾选状态：先初始化源选择，再计算关闭订单集合。
+    // 若顺序颠倒，新分段会暂时被当成关闭，造成普通数量直到下一次点击才恢复。
     key = key === 'merged' ? 'merged' : 'normal';
     if (!state.analysis[key]) {
       state.analysis[key] = analyze(state.records, state.qtyMap, key, paramsResolver(key), state.uspsSplit);
@@ -2371,6 +2449,7 @@ if (typeof module !== 'undefined' && module.exports) {
     var key = modeKey();
     var m = ms();
     var val = parseParam(p, v, m.unified);
+    var oldOrdinary=p==='paperSegs' && state.ordinaryEvolved ? curAnalysis().channels.find(function(c){return c.id==='普通';}) : null;
     wmsClearWaveHistory();  // 重新分段后旧波次号不再对应新分段
     m.unified[p] = val;
     getAnalysis(key).channels.forEach(function (ch) {
@@ -2379,17 +2458,43 @@ if (typeof module !== 'undefined' && module.exports) {
       pp[p] = val;
     });
     invalidate(key);
+    if(p==='paperSegs') resetPaperSelection(null,oldOrdinary);
     render();
   }
   function setChannelParam(chId, p, v) {
     var key = modeKey();
     var m = ms();
+    var oldOrdinary=p==='paperSegs' && state.ordinaryEvolved ? curAnalysis().channels.find(function(c){return c.id==='普通';}) : null;
     var pp = m.per.get(chId);
     if (!pp) { pp = Object.assign({}, m.unified); m.per.set(chId, pp); }
     wmsClearWaveHistory();  // 重新分段后旧波次号不再对应新分段
     pp[p] = parseParam(p, v, m.unified);
     invalidate(key);
+    if(p==='paperSegs') resetPaperSelection(chId,oldOrdinary);
     render();
+  }
+  function resetPaperSelection(chId,oldOrdinary) {
+    // 单件段数改变后，旧的“paper-N”名称可能对应完全不同的订单。
+    // 删除这些名称的已见/勾选记忆，让新段重新默认激活；渠道总开关保持不变。
+    // 普通中同名但订单集合变化的段也需重新激活，不能沿用旧段的关闭状态。
+    var m=ms();
+    [m.sel.segs,m.sel.seenSegs].forEach(function(set){
+      Array.from(set).forEach(function(key){
+        var parts=key.split('|');
+        if((!chId||parts[0]===chId)&&parts[1].indexOf('单件paper-')===0) set.delete(key);
+      });
+    });
+    // Source selections must be rebuilt before Ordinary collects disabled orders.
+    invalidate(modeKey());
+    var next=curAnalysis();syncSelection(next,m);
+    if(oldOrdinary && !state.merged) {
+      var ordinary=next.channels.find(function(c){return c.id==='普通';});
+      if(ordinary) ordinary.segments.forEach(function(seg){
+        var old=oldOrdinary.segByName.get(seg.name);
+        if(!old||!sameOrders(old.orderNos,seg.orderNos)) m.sel.segs.add('普通|'+seg.name);
+      });
+    }
+    status('单件已重新分段，受影响分段已勾选；渠道开关保持原状。','ok');
   }
   function stepOf(p) { return p === 'capacity' ? 100 : 1; }
   function minOf(p) { return stepOf(p); }
@@ -2490,6 +2595,8 @@ if (typeof module !== 'undefined' && module.exports) {
     state.modes.merged.unified = keepM;
   }
   function syncSelection(a, m) {
+    // seen 集合区分“新出现，尚未设置默认值”和“用户主动关闭”。仅看 sel 会
+    // 把主动关闭的分段在每次重绘时重新打开。
     m = m || ms();
     a.channels.forEach(function (ch) {
       if (!m.sel.seenChannels.has(ch.id)) {
@@ -2503,6 +2610,7 @@ if (typeof module !== 'undefined' && module.exports) {
     });
   }
   function handleFile(file, onDone) {
+    // 本地文件与截单下载共用此入口；只有成功解析后才建立新的导入批次。
     var reader = new FileReader();
     reader.onerror = function () { status('文件读取失败，请重试', 'err'); if(onDone) onDone(false); };
     reader.onload = function () {
@@ -2653,6 +2761,7 @@ if (typeof module !== 'undefined' && module.exports) {
       '<td class="num" data-order-total>' + selectedOrders + '</td>' +
       '<td>' + paramCell('', 'capacity', u.capacity) + '</td>' +
       '<td>' + paramCell('', 'hotLine', u.hotLine) + '</td>' +
+      '<td>' + paramCell('', 'paperSegs', u.paperSegs) + '</td>' +
       '<td>' + paramCell('', 'multiSegs', u.multiSegs) + '</td>' +
       '<td>' + paramCell('', 'mixSegs', u.mixSegs) + '</td>' +
       '<td>' + absorbCell('', u.absorb) + '</td>';
@@ -2675,6 +2784,7 @@ if (typeof module !== 'undefined' && module.exports) {
         '<td class="num" data-channel-orders>' + effectiveChannelOrderSum(ch) + '</td>' +
         '<td>' + paramCell(ch.id, 'capacity', p.capacity) + '</td>' +
         '<td>' + paramCell(ch.id, 'hotLine', p.hotLine) + '</td>' +
+        '<td title="按订单数均衡分段，同一 SKU 不拆散；全量吸收时单件并入混件">' + paramCell(ch.id, 'paperSegs', p.paperSegs) + (p.absorb===4?'<small class="dim">并入混件</small>':'') + '</td>' +
         '<td>' + paramCell(ch.id, 'multiSegs', p.multiSegs) + '</td>' +
         '<td>' + paramCell(ch.id, 'mixSegs', p.mixSegs) + '</td>' +
         '<td>' + absorbCell(ch.id, p.absorb) + '</td>';
@@ -2688,8 +2798,9 @@ if (typeof module !== 'undefined' && module.exports) {
       '<th class="left">' + togHtml(chMasterState(), 'data-master="ch"', '点击全选/取消全部渠道') +
       '<span class="type-tog" data-master="ch">渠道</span></th>' +
       '<th>激活订单</th>' +
-      '<th>容量</th>' +
+      '<th title="仅限制爆品分段；单 SKU 超容量规则保持不变">爆品容量</th>' +
       '<th>爆品</th>' +
+      '<th title="单件分段数，默认 1；同一 SKU 不拆散，空分段不生成">单件</th>' +
       '<th>多件</th>' +
       '<th>混件</th>' +
       '<th>吸收</th>' +
@@ -2706,9 +2817,9 @@ if (typeof module !== 'undefined' && module.exports) {
         '<div class="metric"><small>活跃渠道</small>' + metricMarkup('selectedChannelMetric', selectedChans, '/' + activeChans.length) + '</div>' +
       '</div></section>' +
       '<section class="matrix-panel"><div class="twrap"><table class="pt">' +
-      '<colgroup><col style="width:10%"><col style="width:6%"><col style="width:6%">' +
+      '<colgroup><col style="width:9%"><col style="width:6%"><col style="width:6%">' +
       '<col style="width:6%"><col style="width:6%"><col style="width:6%"><col style="width:6%">' +
-      '<col style="width:13.5%"><col style="width:13.5%"><col style="width:13.5%"><col style="width:13.5%"></colgroup>' +
+      '<col style="width:6%"><col style="width:12.25%"><col style="width:12.25%"><col style="width:12.25%"><col style="width:12.25%"></colgroup>' +
       '<thead>' + head + '</thead><tbody>' + rows + '</tbody></table></div></section>';
   }
 
@@ -2847,6 +2958,7 @@ if (typeof module !== 'undefined' && module.exports) {
     }
   }
   function rerenderOrdinaryAfterSelection() {
+    // 普通的订单池和分段结构可能一起变化，不能只改当前点击行的勾选图标。
     if (state.merged || !state.ordinaryEvolved) return false;
     invalidateOrdinary();
     wmsClearWaveHistory();
@@ -2972,6 +3084,7 @@ if (typeof module !== 'undefined' && module.exports) {
     });
   }
   function toggleOrdinaryEvolution() {
+    // 进退化是派生视图切换，不修改原始物流渠道；清理普通分段选择避免旧段名复用。
     if (state.merged) return;
     var m = state.modes.normal;
     var current = getAnalysis('normal');
@@ -3003,6 +3116,7 @@ if (typeof module !== 'undefined' && module.exports) {
     render();
   }
   function toggleUspsSubdivision() {
+    // H/G 独立参与分段和普通吸收；切换后必须重新计算分析、选择及计划身份。
     if (state.merged || (wms && (wms.active || wms.submitting))) return;
     var m = state.modes.normal;
     if (!state.uspsSplit) {
@@ -3062,6 +3176,7 @@ if (typeof module !== 'undefined' && module.exports) {
     evolutionHold = { timer: null, el: null, pointerId: null, x: 0, y: 0 };
   }
   function beginEvolutionHold(el, e) {
+    // 长按和拖动共享渠道标签；移动或取消手势会撤销计时，避免拖排序时误进退化。
     cancelEvolutionHold();
     if (!isEvolutionTarget(el)) return;
     evolutionHold.el = el;
@@ -3546,29 +3661,49 @@ if (typeof module !== 'undefined' && module.exports) {
     }
     card.textContent=text;
   }
+  function logTimestamp(value) {
+    var stamp=Date.parse(value);
+    return Number.isFinite(stamp)?stamp:-Infinity;
+  }
+  function logTimeText(value) {
+    return logTimestamp(value)===-Infinity?'—':new Date(value).toLocaleString('zh-CN',{hour12:false});
+  }
   function renderLogDetails() {
+    // 简要栏不等于完整事件存储：详情从 detailJobs、截单历史和页面提示独立组装。
+    // 内容签名未变时不重建 DOM；变化时保留滚动位置，避免阅读过程中跳回顶部。
     if(!detailJobs || $('logDetailsPanel').hidden!==false) return;
     var list=$('logDetailsContent');
     var entries=Array.from(detailJobs.values()).filter(function(j){return !j.schedule_run_id;}).map(function(j){
       var events=(j.events||[]).slice();
-      if(j.follow_print_error) events.push({stage:'跟随打印未启动',message:j.follow_print_error});
+      if(j.follow_print_error) events.push({at:j.updated_at,stage:'跟随打印未启动',message:j.follow_print_error});
       return {id:j.id,title:(j.generation_job_id?'跟随打印':WMS_MODE_LABEL[j.mode]||j.mode)+' · '+(WMS_STATE_LABEL[j.status]||j.status),at:j.created_at,attempt:j.attempt,events:events};
     });
-    if(cutoffData) (cutoffData.runs||[]).forEach(function(r){entries.push({id:r.id,title:'定时截单 · '+(cutoffLabels[r.status]||r.status),at:r.cutoff,events:(r.events||[]).concat(r.current_events||[])});});
-    entries.sort(function(a,b){return String(b.at||'').localeCompare(String(a.at||''));});
-    if(detailNotices.length) entries.unshift({id:'page-notices',title:'页面操作与提示',events:detailNotices});
+    if(cutoffData) (cutoffData.runs||[]).forEach(function(r){
+      var events=(r.events||[]).concat(r.current_events||[]);
+      var times=events.map(function(e){return logTimestamp(e.at);}).filter(Number.isFinite);
+      entries.push({id:r.id,title:'定时截单 · '+(cutoffLabels[r.status]||r.status),at:r.cutoff,
+        sortAt:times.length?Math.min.apply(null,times):logTimestamp(r.base_at||r.cutoff),events:events});
+    });
+    if(detailNotices.length) {
+      var latest=detailNotices.reduce(function(a,b){return logTimestamp(b.at)>logTimestamp(a.at)?b:a;});
+      entries.push({id:'page-notices',title:'页面操作与提示',at:latest.at,events:detailNotices.slice()});
+    }
+    // 分组按开始时间倒序，组内按事件时间倒序；解析时区偏移后比较，不能比较 ISO 字符串。
+    // 截单按实际首条事件排序，但标题时间仍展示截单时刻。无时间事件放末尾，同刻保持原顺序。
+    entries.sort(function(a,b){return (b.sortAt===undefined?logTimestamp(b.at):b.sortAt)-(a.sortAt===undefined?logTimestamp(a.at):a.sortAt);});
+    entries.forEach(function(entry){entry.events.sort(function(a,b){return logTimestamp(b.at)-logTimestamp(a.at);});});
     var signature=JSON.stringify(entries);
     if(list.dataset.signature===signature) return;
     list.dataset.signature=signature;
     var panel=$('logDetailsPanel'),scroll=panel.scrollTop;
     list.replaceChildren();
     entries.forEach(function(entry){
-      var section=document.createElement('section');section.className='log-task';
+      var section=document.createElement('section');section.className='log-task';section.dataset.logId=entry.id;
       var title=document.createElement('h3');title.textContent=entry.title;section.appendChild(title);
-      var meta=document.createElement('div');meta.className='log-task-meta';meta.textContent=(entry.at?entry.at.slice(0,19).replace('T',' ')+' · ':'')+(entry.attempt?'第 '+entry.attempt+' 轮 · ':'')+entry.events.length+' 条记录';section.appendChild(meta);
+      var meta=document.createElement('div');meta.className='log-task-meta';meta.textContent=(entry.at?logTimeText(entry.at)+' · ':'')+(entry.attempt?'第 '+entry.attempt+' 轮 · ':'')+entry.events.length+' 条记录';section.appendChild(meta);
       entry.events.forEach(function(ev){
         var row=document.createElement('div');row.className='log-event '+(ev.stage||'');
-        var time=document.createElement('time');time.textContent=ev.at?String(ev.at).slice(0,19).replace('T',' '):'—';
+        var time=document.createElement('time');time.textContent=logTimeText(ev.at);
         var stage=document.createElement('strong');
         var stageNames={failed:'执行失败',warning:'执行提示',segment_warning:'分段提示',persistence_warning:'记录保存异常',download_timing:'耗时统计',segment_start:'开始处理分段',segment_wave:'波次生成结果',print_checkpoint:'打印文件记录',export_checkpoint:'导出任务记录',completed:'执行完成',completed_with_warnings:'部分完成',cancelled:'已取消',queued:'已进入队列'};
         stage.textContent=stageNames[ev.stage]||ev.stage||'执行记录';stage.title=ev.stage||'';
@@ -3590,7 +3725,7 @@ if (typeof module !== 'undefined' && module.exports) {
       var r=await fetch('/api/jobs',{signal:AbortSignal.timeout(5000)});
       if(!r.ok) throw new Error('HTTP '+r.status);
       var jobs=await r.json();jobs.forEach(function(j){detailJobs.set(j.id,j);});
-      renderLogDetails();$('logDetailsStatus').textContent='按任务展示完整过程；执行中的记录自动更新。';
+      renderLogDetails();$('logDetailsStatus').textContent='任务与事件均按时间倒序，最新在上；时间为本机时区，执行中的记录自动更新。';
     }catch(e){$('logDetailsStatus').textContent='日志更新失败，已保留现有记录：'+e.message;}
     finally{detailFetching=false;}
   }
@@ -3639,6 +3774,8 @@ if (typeof module !== 'undefined' && module.exports) {
     }
   }
   function wmsRenderLog(job) {
+    // 先保留完整任务记录，再筛选简要进度/结果链接。不要为了压缩展示删后端事件，
+    // 检查点和细节仍用于结果回填、重试判断及日志详情。
     if(logPanel.parentNode !== $('wmsLog')) $('wmsLog').appendChild(logPanel);
     wmsRememberJob(job);
     if (job.follow_print) wmsFollowWatch(job);
@@ -3713,6 +3850,8 @@ if (typeof module !== 'undefined' && module.exports) {
     wmsLogLine(text);
   }
   async function wmsPollOnce() {
+    // 请求同时绑定任务 ID 和轮询代数 epoch。取消、换任务或重连后，晚到的旧响应
+    // 即使 HTTP 成功也必须忽略，否则可能覆盖新任务、回填旧波次或误导入旧文件。
     if (!wms.jobId || wms.pollRequest || wms.cancelling) return;
     var request = { jobId: wms.jobId, epoch: wms.pollEpoch, controller: new AbortController() };
     wms.pollRequest = request;
@@ -3788,6 +3927,7 @@ if (typeof module !== 'undefined' && module.exports) {
     wms.timer = setInterval(wmsPollOnce, 1000);
   }
   function wmsEffectiveSegments() {
+    // 按屏幕渠道顺序及渠道内分段顺序取双重激活项，复制订单数组隔离后续 UI 修改。
     var m = ms();
     var a = curAnalysis();
     var segs = [];
@@ -3819,6 +3959,8 @@ if (typeof module !== 'undefined' && module.exports) {
     return waves;
   }
   async function wmsSubmit(mode) {
+    // 生成请求携带当前计划快照；后台执行的是提交时的订单，不实时读取网页。
+    // 网络超时不代表提交失败：提示查询状态，不能自动再发一次生成请求。
     if (!mode || wms.active || wms.submitting) return;
     if (mode === 'generate_waves' && wms.clearPending) {
       status('历史清理尚未确认，请等待完成或在日志中重试清理后再建立波次。', 'err');
@@ -3870,6 +4012,7 @@ if (typeof module !== 'undefined' && module.exports) {
         var detail = '';
         try { detail = JSON.parse(await resp.text()).detail || ''; } catch (e) { }
         status('提交失败：' + (detail || '未知错误（HTTP ' + resp.status + '）'), 'err');
+        wmsLogLine('提交失败：'+(typeof detail==='string'?detail:JSON.stringify(detail)),'err');
         return;
       }
       var job = await resp.json();
@@ -3997,10 +4140,10 @@ if (typeof module !== 'undefined' && module.exports) {
   }
   function wmsRenderExportLinks() {
     /* 从后端拉取最近导出清单，为尚未展示的文件追加下载链接（刷新页面后仍可恢复） */
-    fetch('/api/exports')
+    return fetch('/api/exports')
       .then(function (r) { return r.ok ? r.json() : []; })
       .then(function (items) {
-        var log = $('wmsLog');
+        var log = $('wmsLog'), added = false;
         (items || []).forEach(function (it) {
           if (!it || !it.file || wms.linkedExports.has(it.file)) return;
           wms.linkedExports.add(it.file);
@@ -4012,12 +4155,16 @@ if (typeof module !== 'undefined' && module.exports) {
           a.textContent = '下载波次规划：' + it.file;
           line.appendChild(a);
           log.appendChild(line);
+          added = true;
         });
-        log.scrollTop = log.scrollHeight;
+        if(added) log.scrollTop = log.scrollHeight;
       })
       .catch(function () { });
   }
   function wmsAutoExport(job) {
+    // 每个任务复用同一保存 Promise 与字节缓存；重试只保存文件，不重复生成波次。
+    // 失败/取消也导出完整提交计划，只填写本任务已确认的波次，未完成行保持空白。
+    // 此步骤由前端触发；页面关闭时完成的任务，在恢复历史时补做保存。
     if (job.planning_export_file) { wmsRenderExportLinks(); return Promise.resolve(true); }
     var entry = wms.exportJobs.get(job.id);
     if (!entry) {
@@ -4179,6 +4326,8 @@ if (typeof module !== 'undefined' && module.exports) {
     if (!ok) wmsAbortPolling('本地 WMS 服务连接已中断；恢复连接后将重新查询任务状态，请勿据此重复提交。');
   }
   async function wmsRestore() {
+    // 普通任务、截单、导出链接是独立异步数据源，任何一个恢复流程都不能清空整栏。
+    // 完成恢复后再协调滚动位置，避免截单文件实际已渲染却被历史日志推到视口外。
     var epoch = wms.pollEpoch;
     try {
       var resp = await fetch('/api/jobs');
@@ -4187,7 +4336,8 @@ if (typeof module !== 'undefined' && module.exports) {
         if (epoch !== wms.pollEpoch || wms.active || wms.submitting) return;
         if (jobs.length) {
           var log = $('wmsLog');
-          if (!wms.restoredIds.size) log.innerHTML = '';
+          // Restore only this task stream. Cutoff records and local notices may
+          // already be present because their initial requests run independently.
           /* 旧 → 新渲染当天全部任务日志，并挂载各自的可下载文件链接 */
           jobs.slice().reverse().forEach(function (j) {
             if (wms.restoredIds.has(j.id)) return;
@@ -4220,13 +4370,25 @@ if (typeof module !== 'undefined' && module.exports) {
       }
     } catch (e) { }
     /* 日志重建完成后才追加当天波次规划导出链接，避免与日志重建竞争（先渲染后追加，防止被清空） */
-    wmsRenderExportLinks();
+    await wmsRenderExportLinks();
     wmsRestoreHistoryRetry();
+    revealCutoffLogs();
   }
 
   /* 一个每日截单；调度、下载和合并属于后端，只有用户点击才分析。 */
   var cutoffBusy = false, cutoffLoading = false, cutoffData = null, cutoffDirty = false, cutoffRequest = false;
   var cutoffLabels = {base:'预导出中',waiting:'等待截单',delta:'增量导出中',merge:'合并校验中',succeeded:'文件已就绪',failed:'失败',missed:'已错过'};
+  function revealCutoffLogs() {
+    // 移动现有卡片，不复制节点。定位卡片顶部使标题和加载入口同时可见；
+    // 活跃任务期间不抢占其进度视图。
+    if(!cutoffData || wms.active || wms.submitting) return;
+    var log=$('wmsLog'),latest=null;
+    cutoffData.runs.slice(0,5).reverse().forEach(function(run){
+      var card=$('cutoff-log-'+run.id);
+      if(card){log.appendChild(card);latest=card;}
+    });
+    if(latest) log.scrollTop += latest.getBoundingClientRect().top-log.getBoundingClientRect().top-log.clientTop-9;
+  }
   function cutoffView(open) {
     $('logDetailsPanel').hidden = true;
     $('btnLogDetails').setAttribute('aria-expanded','false');
@@ -4248,6 +4410,8 @@ if (typeof module !== 'undefined' && module.exports) {
     return a;
   }
   async function cutoffLoad(run) {
+    // 截单只在后台产出文件；用户点击才走正常导入分析。先查任务占用，避免覆盖
+    // 正在生成所依赖的页面规划；替换已有订单前由用户确认。
     if(cutoffLoading || wms.active || wms.submitting || cutoffBusy) {status('请等待当前任务结束后再加载截单订单。','err');return;}
     cutoffLoading=true; wms.submitting=true; wmsUpdateRunButton(); $('btnImport').disabled=true;
     try {
@@ -4309,11 +4473,12 @@ if (typeof module !== 'undefined' && module.exports) {
       var title=document.createElement('div');title.className='ev jobhead';title.textContent='截单 '+cutoffTime(run.cutoff,run.timezone)+' · '+(cutoffLabels[run.status]||run.status);line.appendChild(title);
       if(run.status==='succeeded') line.append(cutoffFileLink(run,false),cutoffFileLink(run,true));
       if(run.status==='failed') {var hint=document.createElement('div');hint.textContent='截单失败，请在定时任务中重试；原因见日志详情。';line.appendChild(hint);}
-      if(atBottom) log.scrollTop=log.scrollHeight;
+      if(atBottom) log.scrollTop += line.getBoundingClientRect().top-log.getBoundingClientRect().top-log.clientTop-9;
     });
     renderLogDetails();
   }
   async function cutoffRefresh() {
+    // 每轮最多一个查询；cutoffDirty 防止后台轮询覆盖用户正在编辑但尚未保存的配置。
     if(cutoffRequest) return;
     cutoffRequest=true;
     try {var data=await cutoffFetch('/api/schedule');if(data && data.config && Array.isArray(data.runs)) cutoffRender(data,true);}

@@ -1,5 +1,8 @@
 <body data-theme="dracula">
+<!-- DOM 契约：id 供 app.js 绑定事件与更新状态，data-* 供委托事件识别目标。
+     更改按钮、面板或表格容器名称时需同步 app.js 和 UI 回归测试。 -->
 <script>
+// 在主体内容绘制前恢复主题，避免首屏先闪过默认色；不可用的本地存储不阻止启动。
 (function () {
   try {
     var savedTheme = localStorage.getItem('wave-planner-theme');
@@ -10,6 +13,7 @@
 })();
 </script>
 <div class="shell">
+  <!-- 顶栏面板开关共用按钮形制；日志详情与定时配置复用右侧主内容区域。 -->
   <header class="app-header">
     <div class="brand"><strong>波次规划工具</strong></div>
     <div class="header-actions">
@@ -80,7 +84,7 @@
     <main class="term">
       <section id="logDetailsPanel" class="schedule-panel" hidden>
         <h2>日志详情</h2>
-        <p id="logDetailsStatus" role="status">按任务展示完整过程；执行中的记录自动更新。</p>
+        <p id="logDetailsStatus" role="status">任务与事件均按时间倒序，最新在上；时间为本机时区，执行中的记录自动更新。</p>
         <div id="logDetailsContent"></div>
       </section>
       <section id="schedulePanel" class="schedule-panel" hidden>

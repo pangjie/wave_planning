@@ -1,3 +1,4 @@
+# 回归范围：模拟打印页面与临时 PDF，验证模板定位、渲染和合并。
 import asyncio
 from datetime import date
 from pathlib import Path

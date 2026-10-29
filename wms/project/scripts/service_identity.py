@@ -1,3 +1,5 @@
+# 服务进程身份辅助工具：记录并核对 PID、启动时间、项目与完整启动命令。
+# PID 会复用，不能仅凭 PID 存活就停止进程；此模块本身不发送停止信号。
 """Single-machine service identity checks. This helper never sends signals."""
 from __future__ import annotations
 

@@ -1,3 +1,5 @@
+# 自动化公共边界：浏览器会话、等待、标识归一化，以及清理错误的独立报告。
+# 业务完成后关闭页面失败只记警告，不能把已确认结果重新归类为未执行。
 from __future__ import annotations
 
 import asyncio

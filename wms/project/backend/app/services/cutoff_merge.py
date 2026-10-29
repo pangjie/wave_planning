@@ -1,3 +1,4 @@
+# 截单文件合并边界：仅处理出库单工作表，按文本出库单号对齐，不重新分析波次。
 """Merge the WMS order sheet only; one outbound order is one complete row."""
 from __future__ import annotations
 
@@ -20,6 +21,8 @@ REQUIRED = {"outboundorderno/出库单号", "shippingcarrier/物流承运商",
 
 
 def read_orders(path: Path) -> tuple[list[str], dict[str, tuple]]:
+    # 截单合并采用严格的一行一单契约：同文件重复单号直接报错，不能猜测如何合并。
+    # 保留文本单号和整行原值；公式不是确定的订单原始值，拒绝使用缓存结果代替。
     book = load_workbook(path, read_only=True, data_only=False)
     try:
         if "出库单" not in book.sheetnames:
@@ -52,6 +55,9 @@ def read_orders(path: Path) -> tuple[list[str], dict[str, tuple]]:
 
 
 def merge_orders(base: Path, delta: Path, target: Path) -> dict[str, int]:
+    # 两次导出的动态 SKU 列数可能不同，先按归一化列名对齐，再按订单号取并集。
+    # 同号以增量整行覆盖，不逐格补值；否则旧 SKU 可能残留在已经变化的订单中。
+    # 结果先写临时文件，完整回读比对后再发布 target，失败不留下“成功”的半成品。
     headers, old = read_orders(base)
     extra_headers, new = read_orders(delta)
     keys, extra = list(map(normalized, headers)), list(map(normalized, extra_headers))

@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# 服务管理入口；命令行参数覆盖环境默认值，相对路径按项目根目录解析。
+# 停止/重启前核对进程身份，启动后等待健康检查；不把占用端口的任意进程当作本服务。
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd -P)"
@@ -188,6 +190,7 @@ check_runtime() {
 }
 
 start_service() {
+  # 后台启动后同时确认进程身份与健康接口；仅端口可连接不足以证明启动了正确实例。
   local pid="" owners="" i="" identified="false"
   check_runtime
 
@@ -256,6 +259,8 @@ start_service() {
 }
 
 stop_service() {
+  # 先发 TERM 留给后端保存/清理，等待 10 秒后重新核对身份才允许 KILL。
+  # 这里的超时是进程退出期限，不是任务完成期限；停止会中断正在运行的任务。
   local pid="" i=""
   pid="$(read_pid || true)"
   if [[ -z "$pid" ]]; then

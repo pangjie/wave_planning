@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 依赖安装入口：默认运行依赖，--dev 包括测试依赖；复用现有虚拟环境。
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"

@@ -1,3 +1,4 @@
+// 浏览器回归：USPS 长按细分/合并及规划状态更新，H/G 的内部身份不能与显示名混用。
 'use strict';
 const T = require('./test-helpers.js');
 T.withChrome({}, async chrome => {

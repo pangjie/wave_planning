@@ -1,3 +1,4 @@
+# 回归范围：执行协程结束后释放句柄，业务历史继续保留。
 """Completed execution handles are disposable; business records are not."""
 import asyncio
 import json

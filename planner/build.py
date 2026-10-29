@@ -16,6 +16,8 @@ app = open(os.path.join(BASE, "app.js"), encoding="utf-8").read()
 vendor = open(os.path.join(BASE, "vendor", "xlsx.full.min.js"), encoding="utf-8").read()
 fonts = open(os.path.join(BASE, "part2-fonts.html"), encoding="utf-8").read()
 
+# 顺序是运行契约：SheetJS 提供 XLSX，全局业务函数由 core 定义，最后 app 绑定 DOM。
+# 页面内联资源便于离线使用；不要手改产物中的脚本，否则下次构建会被覆盖。
 html = (
     head.replace("</head>", fonts + "</head>", 1)
     + body

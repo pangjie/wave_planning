@@ -1,3 +1,5 @@
+# 拣货任务先锁定待处理波次快照，再推进页面操作和完成检查。
+# 业务确认与网络/弹窗恢复分开处理，不能因收尾异常重做已经确认的拣货。
 from __future__ import annotations
 
 import asyncio
@@ -309,6 +311,8 @@ class WmsWavePickAutomation:
                 )
 
         for wave_no in ignored_network_errors:
+            # 网络中断本身不能说明拣货失败。最终列表已确认移出的波次计为完成，
+            # 但 SKU 行数无法恢复，记 0；不能为了补齐统计再次执行拣货。
             if wave_no not in remaining_nos:
                 completed_by_no[wave_no] = CompletedWave(wave_no=wave_no, sku_rows=0)
 

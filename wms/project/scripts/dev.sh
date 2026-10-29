@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# 开发入口：开启 uvicorn 热重载，退出时清理本脚本创建的子进程。
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"

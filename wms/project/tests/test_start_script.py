@@ -1,3 +1,4 @@
+# 回归范围：临时服务进程的启动、停止、重启及身份检查。
 from __future__ import annotations
 
 from dataclasses import dataclass

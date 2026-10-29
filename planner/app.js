@@ -25,9 +25,12 @@
   function chColor(id) { return CH_TEXT_COLOR[id] || '#c9d1d9'; }
 
   /* ---------- 状态 ---------- */
+  // records/qtyMap 是导入底稿；modes 是两种渠道模式各自的参数、排序和勾选状态。
+  // analysis 是可丢弃的派生缓存。改参数需 invalidate，改源勾选需 invalidateOrdinary。
+  // waveNos 仅属于当前 batch_id + plan_id，不能跨导入或跨规划复用。
   function makeModeState() {
     return {
-      unified: { hotLine: 10, capacity: 400, multiSegs: 1, mixSegs: 1, absorb: 1 },
+      unified: Object.assign({},DEFAULT_UNIFIED),
       per: new Map(),
       order: { sortMode: 'fixed', custom: false, list: [] },
       sel: { channels: new Set(), segs: new Set(), seenChannels: new Set(), seenSegs: new Set() }
@@ -52,6 +55,8 @@
     return Date.now().toString(36) + '-' + Math.random().toString(36).slice(2) + '-' + Math.random().toString(36).slice(2);
   }
   function planIdentity() {
+    // 签名描述“当前规划”，不是订单内容的永久哈希。签名变化就换身份并清波次标记，
+    // 防止同名分段重新分配订单后，把旧任务的波次号误填到新分段。
     if (!state.batchId) state.batchId = newPlanId();
     var m = ms();
     var signature = JSON.stringify([state.batchId, state.merged, state.ordinaryEvolved, state.uspsSplit,
@@ -90,6 +95,8 @@
     return function (id) { return m.per.get(id) || m.unified; };
   }
   function getAnalysis(key) {
+    // 普通渠道依赖源分段最终勾选状态：先初始化源选择，再计算关闭订单集合。
+    // 若顺序颠倒，新分段会暂时被当成关闭，造成普通数量直到下一次点击才恢复。
     key = key === 'merged' ? 'merged' : 'normal';
     if (!state.analysis[key]) {
       state.analysis[key] = analyze(state.records, state.qtyMap, key, paramsResolver(key), state.uspsSplit);
@@ -151,6 +158,7 @@
     var key = modeKey();
     var m = ms();
     var val = parseParam(p, v, m.unified);
+    var oldOrdinary=p==='paperSegs' && state.ordinaryEvolved ? curAnalysis().channels.find(function(c){return c.id==='普通';}) : null;
     wmsClearWaveHistory();  // 重新分段后旧波次号不再对应新分段
     m.unified[p] = val;
     getAnalysis(key).channels.forEach(function (ch) {
@@ -159,17 +167,43 @@
       pp[p] = val;
     });
     invalidate(key);
+    if(p==='paperSegs') resetPaperSelection(null,oldOrdinary);
     render();
   }
   function setChannelParam(chId, p, v) {
     var key = modeKey();
     var m = ms();
+    var oldOrdinary=p==='paperSegs' && state.ordinaryEvolved ? curAnalysis().channels.find(function(c){return c.id==='普通';}) : null;
     var pp = m.per.get(chId);
     if (!pp) { pp = Object.assign({}, m.unified); m.per.set(chId, pp); }
     wmsClearWaveHistory();  // 重新分段后旧波次号不再对应新分段
     pp[p] = parseParam(p, v, m.unified);
     invalidate(key);
+    if(p==='paperSegs') resetPaperSelection(chId,oldOrdinary);
     render();
+  }
+  function resetPaperSelection(chId,oldOrdinary) {
+    // 单件段数改变后，旧的“paper-N”名称可能对应完全不同的订单。
+    // 删除这些名称的已见/勾选记忆，让新段重新默认激活；渠道总开关保持不变。
+    // 普通中同名但订单集合变化的段也需重新激活，不能沿用旧段的关闭状态。
+    var m=ms();
+    [m.sel.segs,m.sel.seenSegs].forEach(function(set){
+      Array.from(set).forEach(function(key){
+        var parts=key.split('|');
+        if((!chId||parts[0]===chId)&&parts[1].indexOf('单件paper-')===0) set.delete(key);
+      });
+    });
+    // Source selections must be rebuilt before Ordinary collects disabled orders.
+    invalidate(modeKey());
+    var next=curAnalysis();syncSelection(next,m);
+    if(oldOrdinary && !state.merged) {
+      var ordinary=next.channels.find(function(c){return c.id==='普通';});
+      if(ordinary) ordinary.segments.forEach(function(seg){
+        var old=oldOrdinary.segByName.get(seg.name);
+        if(!old||!sameOrders(old.orderNos,seg.orderNos)) m.sel.segs.add('普通|'+seg.name);
+      });
+    }
+    status('单件已重新分段，受影响分段已勾选；渠道开关保持原状。','ok');
   }
   function stepOf(p) { return p === 'capacity' ? 100 : 1; }
   function minOf(p) { return stepOf(p); }
@@ -270,6 +304,8 @@
     state.modes.merged.unified = keepM;
   }
   function syncSelection(a, m) {
+    // seen 集合区分“新出现，尚未设置默认值”和“用户主动关闭”。仅看 sel 会
+    // 把主动关闭的分段在每次重绘时重新打开。
     m = m || ms();
     a.channels.forEach(function (ch) {
       if (!m.sel.seenChannels.has(ch.id)) {
@@ -283,6 +319,7 @@
     });
   }
   function handleFile(file, onDone) {
+    // 本地文件与截单下载共用此入口；只有成功解析后才建立新的导入批次。
     var reader = new FileReader();
     reader.onerror = function () { status('文件读取失败，请重试', 'err'); if(onDone) onDone(false); };
     reader.onload = function () {
@@ -433,6 +470,7 @@
       '<td class="num" data-order-total>' + selectedOrders + '</td>' +
       '<td>' + paramCell('', 'capacity', u.capacity) + '</td>' +
       '<td>' + paramCell('', 'hotLine', u.hotLine) + '</td>' +
+      '<td>' + paramCell('', 'paperSegs', u.paperSegs) + '</td>' +
       '<td>' + paramCell('', 'multiSegs', u.multiSegs) + '</td>' +
       '<td>' + paramCell('', 'mixSegs', u.mixSegs) + '</td>' +
       '<td>' + absorbCell('', u.absorb) + '</td>';
@@ -455,6 +493,7 @@
         '<td class="num" data-channel-orders>' + effectiveChannelOrderSum(ch) + '</td>' +
         '<td>' + paramCell(ch.id, 'capacity', p.capacity) + '</td>' +
         '<td>' + paramCell(ch.id, 'hotLine', p.hotLine) + '</td>' +
+        '<td title="按订单数均衡分段，同一 SKU 不拆散；全量吸收时单件并入混件">' + paramCell(ch.id, 'paperSegs', p.paperSegs) + (p.absorb===4?'<small class="dim">并入混件</small>':'') + '</td>' +
         '<td>' + paramCell(ch.id, 'multiSegs', p.multiSegs) + '</td>' +
         '<td>' + paramCell(ch.id, 'mixSegs', p.mixSegs) + '</td>' +
         '<td>' + absorbCell(ch.id, p.absorb) + '</td>';
@@ -468,8 +507,9 @@
       '<th class="left">' + togHtml(chMasterState(), 'data-master="ch"', '点击全选/取消全部渠道') +
       '<span class="type-tog" data-master="ch">渠道</span></th>' +
       '<th>激活订单</th>' +
-      '<th>容量</th>' +
+      '<th title="仅限制爆品分段；单 SKU 超容量规则保持不变">爆品容量</th>' +
       '<th>爆品</th>' +
+      '<th title="单件分段数，默认 1；同一 SKU 不拆散，空分段不生成">单件</th>' +
       '<th>多件</th>' +
       '<th>混件</th>' +
       '<th>吸收</th>' +
@@ -486,9 +526,9 @@
         '<div class="metric"><small>活跃渠道</small>' + metricMarkup('selectedChannelMetric', selectedChans, '/' + activeChans.length) + '</div>' +
       '</div></section>' +
       '<section class="matrix-panel"><div class="twrap"><table class="pt">' +
-      '<colgroup><col style="width:10%"><col style="width:6%"><col style="width:6%">' +
+      '<colgroup><col style="width:9%"><col style="width:6%"><col style="width:6%">' +
       '<col style="width:6%"><col style="width:6%"><col style="width:6%"><col style="width:6%">' +
-      '<col style="width:13.5%"><col style="width:13.5%"><col style="width:13.5%"><col style="width:13.5%"></colgroup>' +
+      '<col style="width:6%"><col style="width:12.25%"><col style="width:12.25%"><col style="width:12.25%"><col style="width:12.25%"></colgroup>' +
       '<thead>' + head + '</thead><tbody>' + rows + '</tbody></table></div></section>';
   }
 
@@ -627,6 +667,7 @@
     }
   }
   function rerenderOrdinaryAfterSelection() {
+    // 普通的订单池和分段结构可能一起变化，不能只改当前点击行的勾选图标。
     if (state.merged || !state.ordinaryEvolved) return false;
     invalidateOrdinary();
     wmsClearWaveHistory();
@@ -752,6 +793,7 @@
     });
   }
   function toggleOrdinaryEvolution() {
+    // 进退化是派生视图切换，不修改原始物流渠道；清理普通分段选择避免旧段名复用。
     if (state.merged) return;
     var m = state.modes.normal;
     var current = getAnalysis('normal');
@@ -783,6 +825,7 @@
     render();
   }
   function toggleUspsSubdivision() {
+    // H/G 独立参与分段和普通吸收；切换后必须重新计算分析、选择及计划身份。
     if (state.merged || (wms && (wms.active || wms.submitting))) return;
     var m = state.modes.normal;
     if (!state.uspsSplit) {
@@ -842,6 +885,7 @@
     evolutionHold = { timer: null, el: null, pointerId: null, x: 0, y: 0 };
   }
   function beginEvolutionHold(el, e) {
+    // 长按和拖动共享渠道标签；移动或取消手势会撤销计时，避免拖排序时误进退化。
     cancelEvolutionHold();
     if (!isEvolutionTarget(el)) return;
     evolutionHold.el = el;
@@ -1326,29 +1370,49 @@
     }
     card.textContent=text;
   }
+  function logTimestamp(value) {
+    var stamp=Date.parse(value);
+    return Number.isFinite(stamp)?stamp:-Infinity;
+  }
+  function logTimeText(value) {
+    return logTimestamp(value)===-Infinity?'—':new Date(value).toLocaleString('zh-CN',{hour12:false});
+  }
   function renderLogDetails() {
+    // 简要栏不等于完整事件存储：详情从 detailJobs、截单历史和页面提示独立组装。
+    // 内容签名未变时不重建 DOM；变化时保留滚动位置，避免阅读过程中跳回顶部。
     if(!detailJobs || $('logDetailsPanel').hidden!==false) return;
     var list=$('logDetailsContent');
     var entries=Array.from(detailJobs.values()).filter(function(j){return !j.schedule_run_id;}).map(function(j){
       var events=(j.events||[]).slice();
-      if(j.follow_print_error) events.push({stage:'跟随打印未启动',message:j.follow_print_error});
+      if(j.follow_print_error) events.push({at:j.updated_at,stage:'跟随打印未启动',message:j.follow_print_error});
       return {id:j.id,title:(j.generation_job_id?'跟随打印':WMS_MODE_LABEL[j.mode]||j.mode)+' · '+(WMS_STATE_LABEL[j.status]||j.status),at:j.created_at,attempt:j.attempt,events:events};
     });
-    if(cutoffData) (cutoffData.runs||[]).forEach(function(r){entries.push({id:r.id,title:'定时截单 · '+(cutoffLabels[r.status]||r.status),at:r.cutoff,events:(r.events||[]).concat(r.current_events||[])});});
-    entries.sort(function(a,b){return String(b.at||'').localeCompare(String(a.at||''));});
-    if(detailNotices.length) entries.unshift({id:'page-notices',title:'页面操作与提示',events:detailNotices});
+    if(cutoffData) (cutoffData.runs||[]).forEach(function(r){
+      var events=(r.events||[]).concat(r.current_events||[]);
+      var times=events.map(function(e){return logTimestamp(e.at);}).filter(Number.isFinite);
+      entries.push({id:r.id,title:'定时截单 · '+(cutoffLabels[r.status]||r.status),at:r.cutoff,
+        sortAt:times.length?Math.min.apply(null,times):logTimestamp(r.base_at||r.cutoff),events:events});
+    });
+    if(detailNotices.length) {
+      var latest=detailNotices.reduce(function(a,b){return logTimestamp(b.at)>logTimestamp(a.at)?b:a;});
+      entries.push({id:'page-notices',title:'页面操作与提示',at:latest.at,events:detailNotices.slice()});
+    }
+    // 分组按开始时间倒序，组内按事件时间倒序；解析时区偏移后比较，不能比较 ISO 字符串。
+    // 截单按实际首条事件排序，但标题时间仍展示截单时刻。无时间事件放末尾，同刻保持原顺序。
+    entries.sort(function(a,b){return (b.sortAt===undefined?logTimestamp(b.at):b.sortAt)-(a.sortAt===undefined?logTimestamp(a.at):a.sortAt);});
+    entries.forEach(function(entry){entry.events.sort(function(a,b){return logTimestamp(b.at)-logTimestamp(a.at);});});
     var signature=JSON.stringify(entries);
     if(list.dataset.signature===signature) return;
     list.dataset.signature=signature;
     var panel=$('logDetailsPanel'),scroll=panel.scrollTop;
     list.replaceChildren();
     entries.forEach(function(entry){
-      var section=document.createElement('section');section.className='log-task';
+      var section=document.createElement('section');section.className='log-task';section.dataset.logId=entry.id;
       var title=document.createElement('h3');title.textContent=entry.title;section.appendChild(title);
-      var meta=document.createElement('div');meta.className='log-task-meta';meta.textContent=(entry.at?entry.at.slice(0,19).replace('T',' ')+' · ':'')+(entry.attempt?'第 '+entry.attempt+' 轮 · ':'')+entry.events.length+' 条记录';section.appendChild(meta);
+      var meta=document.createElement('div');meta.className='log-task-meta';meta.textContent=(entry.at?logTimeText(entry.at)+' · ':'')+(entry.attempt?'第 '+entry.attempt+' 轮 · ':'')+entry.events.length+' 条记录';section.appendChild(meta);
       entry.events.forEach(function(ev){
         var row=document.createElement('div');row.className='log-event '+(ev.stage||'');
-        var time=document.createElement('time');time.textContent=ev.at?String(ev.at).slice(0,19).replace('T',' '):'—';
+        var time=document.createElement('time');time.textContent=logTimeText(ev.at);
         var stage=document.createElement('strong');
         var stageNames={failed:'执行失败',warning:'执行提示',segment_warning:'分段提示',persistence_warning:'记录保存异常',download_timing:'耗时统计',segment_start:'开始处理分段',segment_wave:'波次生成结果',print_checkpoint:'打印文件记录',export_checkpoint:'导出任务记录',completed:'执行完成',completed_with_warnings:'部分完成',cancelled:'已取消',queued:'已进入队列'};
         stage.textContent=stageNames[ev.stage]||ev.stage||'执行记录';stage.title=ev.stage||'';
@@ -1370,7 +1434,7 @@
       var r=await fetch('/api/jobs',{signal:AbortSignal.timeout(5000)});
       if(!r.ok) throw new Error('HTTP '+r.status);
       var jobs=await r.json();jobs.forEach(function(j){detailJobs.set(j.id,j);});
-      renderLogDetails();$('logDetailsStatus').textContent='按任务展示完整过程；执行中的记录自动更新。';
+      renderLogDetails();$('logDetailsStatus').textContent='任务与事件均按时间倒序，最新在上；时间为本机时区，执行中的记录自动更新。';
     }catch(e){$('logDetailsStatus').textContent='日志更新失败，已保留现有记录：'+e.message;}
     finally{detailFetching=false;}
   }
@@ -1419,6 +1483,8 @@
     }
   }
   function wmsRenderLog(job) {
+    // 先保留完整任务记录，再筛选简要进度/结果链接。不要为了压缩展示删后端事件，
+    // 检查点和细节仍用于结果回填、重试判断及日志详情。
     if(logPanel.parentNode !== $('wmsLog')) $('wmsLog').appendChild(logPanel);
     wmsRememberJob(job);
     if (job.follow_print) wmsFollowWatch(job);
@@ -1493,6 +1559,8 @@
     wmsLogLine(text);
   }
   async function wmsPollOnce() {
+    // 请求同时绑定任务 ID 和轮询代数 epoch。取消、换任务或重连后，晚到的旧响应
+    // 即使 HTTP 成功也必须忽略，否则可能覆盖新任务、回填旧波次或误导入旧文件。
     if (!wms.jobId || wms.pollRequest || wms.cancelling) return;
     var request = { jobId: wms.jobId, epoch: wms.pollEpoch, controller: new AbortController() };
     wms.pollRequest = request;
@@ -1568,6 +1636,7 @@
     wms.timer = setInterval(wmsPollOnce, 1000);
   }
   function wmsEffectiveSegments() {
+    // 按屏幕渠道顺序及渠道内分段顺序取双重激活项，复制订单数组隔离后续 UI 修改。
     var m = ms();
     var a = curAnalysis();
     var segs = [];
@@ -1599,6 +1668,8 @@
     return waves;
   }
   async function wmsSubmit(mode) {
+    // 生成请求携带当前计划快照；后台执行的是提交时的订单，不实时读取网页。
+    // 网络超时不代表提交失败：提示查询状态，不能自动再发一次生成请求。
     if (!mode || wms.active || wms.submitting) return;
     if (mode === 'generate_waves' && wms.clearPending) {
       status('历史清理尚未确认，请等待完成或在日志中重试清理后再建立波次。', 'err');
@@ -1650,6 +1721,7 @@
         var detail = '';
         try { detail = JSON.parse(await resp.text()).detail || ''; } catch (e) { }
         status('提交失败：' + (detail || '未知错误（HTTP ' + resp.status + '）'), 'err');
+        wmsLogLine('提交失败：'+(typeof detail==='string'?detail:JSON.stringify(detail)),'err');
         return;
       }
       var job = await resp.json();
@@ -1777,10 +1849,10 @@
   }
   function wmsRenderExportLinks() {
     /* 从后端拉取最近导出清单，为尚未展示的文件追加下载链接（刷新页面后仍可恢复） */
-    fetch('/api/exports')
+    return fetch('/api/exports')
       .then(function (r) { return r.ok ? r.json() : []; })
       .then(function (items) {
-        var log = $('wmsLog');
+        var log = $('wmsLog'), added = false;
         (items || []).forEach(function (it) {
           if (!it || !it.file || wms.linkedExports.has(it.file)) return;
           wms.linkedExports.add(it.file);
@@ -1792,12 +1864,16 @@
           a.textContent = '下载波次规划：' + it.file;
           line.appendChild(a);
           log.appendChild(line);
+          added = true;
         });
-        log.scrollTop = log.scrollHeight;
+        if(added) log.scrollTop = log.scrollHeight;
       })
       .catch(function () { });
   }
   function wmsAutoExport(job) {
+    // 每个任务复用同一保存 Promise 与字节缓存；重试只保存文件，不重复生成波次。
+    // 失败/取消也导出完整提交计划，只填写本任务已确认的波次，未完成行保持空白。
+    // 此步骤由前端触发；页面关闭时完成的任务，在恢复历史时补做保存。
     if (job.planning_export_file) { wmsRenderExportLinks(); return Promise.resolve(true); }
     var entry = wms.exportJobs.get(job.id);
     if (!entry) {
@@ -1959,6 +2035,8 @@
     if (!ok) wmsAbortPolling('本地 WMS 服务连接已中断；恢复连接后将重新查询任务状态，请勿据此重复提交。');
   }
   async function wmsRestore() {
+    // 普通任务、截单、导出链接是独立异步数据源，任何一个恢复流程都不能清空整栏。
+    // 完成恢复后再协调滚动位置，避免截单文件实际已渲染却被历史日志推到视口外。
     var epoch = wms.pollEpoch;
     try {
       var resp = await fetch('/api/jobs');
@@ -1967,7 +2045,8 @@
         if (epoch !== wms.pollEpoch || wms.active || wms.submitting) return;
         if (jobs.length) {
           var log = $('wmsLog');
-          if (!wms.restoredIds.size) log.innerHTML = '';
+          // Restore only this task stream. Cutoff records and local notices may
+          // already be present because their initial requests run independently.
           /* 旧 → 新渲染当天全部任务日志，并挂载各自的可下载文件链接 */
           jobs.slice().reverse().forEach(function (j) {
             if (wms.restoredIds.has(j.id)) return;
@@ -2000,13 +2079,25 @@
       }
     } catch (e) { }
     /* 日志重建完成后才追加当天波次规划导出链接，避免与日志重建竞争（先渲染后追加，防止被清空） */
-    wmsRenderExportLinks();
+    await wmsRenderExportLinks();
     wmsRestoreHistoryRetry();
+    revealCutoffLogs();
   }
 
   /* 一个每日截单；调度、下载和合并属于后端，只有用户点击才分析。 */
   var cutoffBusy = false, cutoffLoading = false, cutoffData = null, cutoffDirty = false, cutoffRequest = false;
   var cutoffLabels = {base:'预导出中',waiting:'等待截单',delta:'增量导出中',merge:'合并校验中',succeeded:'文件已就绪',failed:'失败',missed:'已错过'};
+  function revealCutoffLogs() {
+    // 移动现有卡片，不复制节点。定位卡片顶部使标题和加载入口同时可见；
+    // 活跃任务期间不抢占其进度视图。
+    if(!cutoffData || wms.active || wms.submitting) return;
+    var log=$('wmsLog'),latest=null;
+    cutoffData.runs.slice(0,5).reverse().forEach(function(run){
+      var card=$('cutoff-log-'+run.id);
+      if(card){log.appendChild(card);latest=card;}
+    });
+    if(latest) log.scrollTop += latest.getBoundingClientRect().top-log.getBoundingClientRect().top-log.clientTop-9;
+  }
   function cutoffView(open) {
     $('logDetailsPanel').hidden = true;
     $('btnLogDetails').setAttribute('aria-expanded','false');
@@ -2028,6 +2119,8 @@
     return a;
   }
   async function cutoffLoad(run) {
+    // 截单只在后台产出文件；用户点击才走正常导入分析。先查任务占用，避免覆盖
+    // 正在生成所依赖的页面规划；替换已有订单前由用户确认。
     if(cutoffLoading || wms.active || wms.submitting || cutoffBusy) {status('请等待当前任务结束后再加载截单订单。','err');return;}
     cutoffLoading=true; wms.submitting=true; wmsUpdateRunButton(); $('btnImport').disabled=true;
     try {
@@ -2089,11 +2182,12 @@
       var title=document.createElement('div');title.className='ev jobhead';title.textContent='截单 '+cutoffTime(run.cutoff,run.timezone)+' · '+(cutoffLabels[run.status]||run.status);line.appendChild(title);
       if(run.status==='succeeded') line.append(cutoffFileLink(run,false),cutoffFileLink(run,true));
       if(run.status==='failed') {var hint=document.createElement('div');hint.textContent='截单失败，请在定时任务中重试；原因见日志详情。';line.appendChild(hint);}
-      if(atBottom) log.scrollTop=log.scrollHeight;
+      if(atBottom) log.scrollTop += line.getBoundingClientRect().top-log.getBoundingClientRect().top-log.clientTop-9;
     });
     renderLogDetails();
   }
   async function cutoffRefresh() {
+    // 每轮最多一个查询；cutoffDirty 防止后台轮询覆盖用户正在编辑但尚未保存的配置。
     if(cutoffRequest) return;
     cutoffRequest=true;
     try {var data=await cutoffFetch('/api/schedule');if(data && data.config && Array.isArray(data.runs)) cutoffRender(data,true);}

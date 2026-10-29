@@ -1,3 +1,4 @@
+# 启动脚本测试专用最小服务，仅提供健康检查，不启动 WMS 自动化和截单调度。
 """Health-only fixture app, with no production WMS or file mutation routes."""
 
 import os

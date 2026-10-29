@@ -1,3 +1,4 @@
+# 回归范围：生成结果及规划文件齐全后才启动跟随打印，关联任务不重复创建。
 """Follow printing never repeats generation and requires its saved workbook."""
 import asyncio
 import json

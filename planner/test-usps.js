@@ -1,3 +1,4 @@
+// 纯计算回归：构造带正确校验位的 PIC，覆盖 USPS H/G 识别与规则边界。
 'use strict';
 const assert = require('node:assert/strict');
 const C = require('./core.js');

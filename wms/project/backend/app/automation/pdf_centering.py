@@ -1,3 +1,5 @@
+# PDF 后处理：识别可见绘制对象边界，平移内容到纸张中心，保持纸张尺寸。
+# 限制最大移动比例并先写临时文件，避免异常边界把整页内容移出纸面。
 from __future__ import annotations
 
 import logging
@@ -99,6 +101,7 @@ def center_pdf_visible_content(
         temporary.unlink(missing_ok=True)
 
 
+# 返回 PDF 点单位的左/上/右/下边界，排除背景对象后裁剪到纸张范围。
 def _visible_page_bounds(
     page: Any,
     page_width: float,
@@ -133,6 +136,7 @@ def _visible_page_bounds(
     )
 
 
+# 近乎整页的图片视作背景，避免它的边界掩盖正文偏移。
 def _is_visible_object(
     kind: str,
     item: dict[str, Any],
@@ -171,6 +175,7 @@ def _is_white_or_transparent(color: Any) -> bool:
     return False
 
 
+# 输入的 Y 从上向下，PDF 平移的 Y 向上，因此反转方向并限制移动量。
 def _translation_from_bounds(
     page_width: float,
     page_height: float,

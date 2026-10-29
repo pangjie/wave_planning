@@ -1,3 +1,5 @@
+# 配置契约：路径及浏览器选择来自环境变量，页面定位与超时来自 automation.json。
+# 超时字段单位为毫秒；变更 WMS 页面结构时优先核对选择器配置及对应回归测试。
 from __future__ import annotations
 
 import json
@@ -169,6 +171,7 @@ class Settings(BaseModel):
     browser_channel: str | None = None
 
     @classmethod
+    # 环境变量决定本次进程的运行配置；不在这里创建目录或安装浏览器。
     def from_environment(cls) -> "Settings":
         root = PROJECT_ROOT
         channel = os.getenv("WMS_BROWSER_CHANNEL", "chrome") or None
@@ -185,11 +188,13 @@ class Settings(BaseModel):
             browser_channel=channel,
         )
 
+    # JSON 通过模型校验后才可使用，缺字段或越界应在启动阶段暴露。
     def load_automation(self) -> AutomationConfig:
         raw: dict[str, Any] = json.loads(self.automation_config_path.read_text("utf-8"))
         return AutomationConfig.model_validate(raw)
 
 
 @lru_cache
+# 进程内缓存配置；修改环境后需重启，测试会显式清除此缓存。
 def get_settings() -> Settings:
     return Settings.from_environment()

@@ -1,7 +1,8 @@
-"""Audit regressions: assert the required behavior, even while fixes are pending.
+# 回归范围：审计发现问题的回归契约，使用临时文件和模拟依赖。
+"""Audit regressions: preserve the required behavior of the implemented fixes.
 
 All persistence lives in tmp_path. No test launches a browser, contacts WMS, or
-replays a production operation. B0 intentionally leaves these regressions red.
+replays a production operation.
 """
 
 import errno

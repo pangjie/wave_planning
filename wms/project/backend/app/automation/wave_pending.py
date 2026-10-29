@@ -1,3 +1,5 @@
+# 波次列表适配：切换指定页签、读取分页、按完整波次号查找。
+# 调用方依赖 WaveNotFoundError 区分“确实未找到”和页面/加载故障，不能混淆。
 from __future__ import annotations
 
 import asyncio
@@ -184,6 +186,7 @@ class PendingWaveCatalog:
             await asyncio.sleep(0.05)
         raise AutomationError(f"切换到“{tab_text}”子页签超时，已停止操作。")
 
+    # 分页快照按波次号去重；限制页数，避免翻页未生效时无限循环。
     async def _read_all_pages(
         self,
         page: Page,
@@ -205,6 +208,7 @@ class PendingWaveCatalog:
             if not await self._advance_page(page):
                 return waves
 
+    # 按 rowid 精确查找；只有到达末页仍未找到才返回 False。
     async def _find_across_pages(
         self,
         page: Page,
@@ -230,6 +234,7 @@ class PendingWaveCatalog:
                 timeout=self.config.wave_picking.timeouts_ms.navigation,
             )
 
+    # 点击后验证页码变化并等待加载，点击成功不等于结果已经换页。
     async def _advance_page(self, page: Page) -> bool:
         cfg = self.config.wave_picking
         selectors = cfg.selectors

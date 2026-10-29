@@ -1,3 +1,4 @@
+# 回归范围：测试基建必须阻止误连真实浏览器/服务。
 """The test harness must fail closed before touching a real browser or service."""
 
 import importlib.util

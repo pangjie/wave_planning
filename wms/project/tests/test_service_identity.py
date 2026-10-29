@@ -1,3 +1,4 @@
+# 回归范围：模拟 PID 复用与进程命令变化，验证身份核对。
 """A19 identities and PID reuse are simulated; unit tests never send signals."""
 import importlib.util
 import json

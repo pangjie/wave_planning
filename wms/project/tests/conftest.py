@@ -1,3 +1,5 @@
+# 测试隔离公共夹具：替换运行目录和生产自动化入口，防止测试落到真实 profile。
+# 需要浏览器行为的单元测试使用 mock；临时服务测试只操作自己创建的进程。
 """Default tests own temporary data and cannot contact production services."""
 
 from __future__ import annotations

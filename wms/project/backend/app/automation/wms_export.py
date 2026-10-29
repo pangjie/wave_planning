@@ -1,3 +1,5 @@
+# 全量/截单导出共用流程：准备筛选 → 校验模板 → 提交 → 识别任务 → 下载。
+# 截单检查点用于恢复原导出；手工全量导出先重置筛选，避免继承上次增量范围。
 from __future__ import annotations
 
 import asyncio
@@ -44,6 +46,7 @@ class WmsExportAutomation:
         self.config = config
         self.task_center = ExportTaskCenter(settings, config)
 
+    # 保持指定的有头/无头模式；恢复已有 task_key 时仅等候和下载原任务。
     async def run(
         self,
         progress: ProgressCallback,
@@ -209,6 +212,7 @@ class WmsExportAutomation:
             raise AutomationError("WMS 改写了创建时间筛选范围，已停止导出。")
         await progress("created_range_verified", f"已确认待处理订单创建时间：{start} 至 {end}（WMS 页面时区）。")
 
+    # 核对模板选中状态，不能看到导出弹窗就提交默认模板。
     async def _ensure_template(self, dialog: Locator, page: Page) -> str:
         cfg = self.config
         selectors = cfg.selectors
@@ -303,6 +307,7 @@ class WmsExportAutomation:
         )
 
     @staticmethod
+    # 读取已选字段而非所有可选字段，供模板完整性校验使用。
     async def _read_selected_template_fields(dialog: Locator) -> list[str]:
         labels = dialog.locator("label.el-checkbox")
         return await labels.evaluate_all(

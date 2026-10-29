@@ -1,7 +1,13 @@
 /* =============================================================
- * 波次规划工具 · 核心逻辑（纯计算不依赖 DOM；导出下载函数例外，仅依赖 XLSX 全局）
+ * 波次规划工具 · 核心逻辑（分段计算不依赖 DOM；读表依赖 XLSX，浏览器下载依赖 DOM）
  * ============================================================= */
 'use strict';
+
+/* 数据流：Excel 行 → 去重订单 records → 渠道分析 → 激活分段 → 工作表规格 → XLSX。
+ * orderNo 是订单身份；count/orderCount 是订单数，qty/pickQty 是商品件数，不能混用。
+ * 内部 kind（hot/paper/multi/mix）与页面展示文字不同，业务判断必须使用 kind。
+ * 分析结果保留关闭的分段；实际导出及激活统计必须同时检查渠道与分段开关。
+ */
 
 /* ---------- 1. 领域常量 ---------- */
 var REQUIRED_COLS = [
@@ -39,7 +45,7 @@ var FIXED_MERGED_ORDER = ['CBT', '普通', 'CBS'];
 function segDisplayName(name) {
   return String(name).replace(/-\d+$/, '').replace(/\d+$/, '');
 }
-var DEFAULT_UNIFIED = { hotLine: 10, capacity: 400, multiSegs: 1, mixSegs: 1, absorb: 1 };
+var DEFAULT_UNIFIED = { hotLine: 10, capacity: 400, paperSegs: 1, multiSegs: 1, mixSegs: 1, absorb: 1 };
 /* 爆品单SKU分段超过多项搜索单次上限（700 行）时按订单数均分拆分；与波次容量设置无关 */
 var HOT_SINGLE_SKU_SPLIT_LIMIT = 700;
 var CHANNEL_COLORS = {
@@ -54,6 +60,8 @@ var USPS_H_STCS = new Set('037 063 075 116 120 121 166 184 185 186 187 190 191 2
 CHANNEL_COLORS['USPS-H'] = 'F5E4D4';
 CHANNEL_COLORS['USPS-G'] = 'E6F4E6';
 function uspsType(raw) {
+  // 先校验完整 PIC 的长度和校验位，再读 STC；带 420 邮编前缀时必须唯一解出 PIC。
+  // 非文本、校验失败或不在 H 清单内均归 G，不凭不完整号码推测 H。
   if (typeof raw !== 'string') return 'USPS-G';
   function valid(pic) {
     if (!/^9[2345](?:[0-9]{20}|[0-9]{24})$/.test(pic)) return false;
@@ -70,6 +78,7 @@ function uspsType(raw) {
   return pic && USPS_H_STCS.has(pic.slice(2, 5)) ? 'USPS-H' : 'USPS-G';
 }
 function applyUspsSubdivision(records, enabled) {
+  // 原渠道只记录一次，保证反复切换 H/G 时可恢复 USPS，而非把细分结果当原始渠道。
   records.forEach(function (r) {
     if (!r.baseChannelId) r.baseChannelId = r.channelId;
     r.channelId = enabled && r.baseChannelId === 'USPS' ? (r.uspsType || 'USPS-G') : r.baseChannelId;
@@ -161,6 +170,8 @@ function trackingChannel(t) {
 
 /* ---------- 5. 数据行 -> 订单记录 ---------- */
 function buildRecords(dataRows, headerMap) {
+  // 同号只保留首次总件数并合并 SKU 集合，不能把重复行的件数再次累加。
+  // 缺单号的行暂以 Excel 行号参与分析；这不是可提交到 WMS 的真实订单号。
   var records = [];
   var byOrder = new Map(); // 出库单号 -> 订单记录（多行订单合并）
   var qtyMap = Object.create(null); // 出库单号 -> 总数量（首次遇到，不包含继承键）
@@ -216,7 +227,10 @@ function buildRecords(dataRows, headerMap) {
 /* 输入 items 的权重取 item.count；返回 k 个子序列（保持顺序，尽量使最大段和最轻）。
    k > items.length 时，空段补在末尾。 */
 function linearPartition(items, k) {
+  // 元素（通常为整个 SKU）不可拆；优化目标是最小化最重分段的订单数，非拣货件数。
+  // 保留输入顺序才能让导出的 SKU 序列与分段边界一致。
   var n = items.length;
+  if(k===1) return [items.slice()];
   var result = [];
   if (n === 0) { for (var e = 0; e < k; e++) result.push([]); return result; }
   var jmax = Math.min(k, n);
@@ -225,6 +239,8 @@ function linearPartition(items, k) {
   for (var i = 0; i < n; i++) pref[i + 1] = pref[i] + w[i];
   var INF = 1e18;
   var dp = [], opt = [];
+  // dp[r][j]：前 r 个元素分成 j 段时的最小“最大段重”；opt 记录最后一段起点。
+  // 转移取 max(前 j-1 段最优值, 当前段权重)，再对所有合法切点取最小值。
   for (var r = 0; r <= n; r++) {
     dp.push(new Float64Array(jmax + 1).fill(INF));
     opt.push(new Int32Array(jmax + 1));
@@ -233,6 +249,7 @@ function linearPartition(items, k) {
   var j;
   var solve;
   solve = function (l, r, ml, mr) {
+    // 利用最优切点的单调性缩窄左右区间；权重来自非负订单数，不能改为带负权指标。
     if (l > r) return;
     var mid = (l + r) >> 1;
     var lo = Math.max(ml, j - 1, 0);
@@ -293,6 +310,8 @@ function partitionByCapacity(items, W) {
 
 /* ---------- 7. 混件连通组件 ---------- */
 function buildComponents(groups) {
+  // 共享任意 SKU 的组具有传递关系：A∩B、B∩C 非空时，A/B/C 必须作为整体分配。
+  // 因此不能仅按每个订单的首个 SKU 分组，否则混件的关联 SKU 会被拆散。
   var n = groups.length;
   var parent = [];
   for (var i = 0; i < n; i++) parent.push(i);
@@ -367,6 +386,7 @@ function discreteAllocate(components, N) {
 
 /* ---------- 8. 最终分段 ---------- */
 function finalizeSeg(kind, name, orderNos, skuPool, qtyMap) {
+  // 最终段统一在这里计算订单数/拣货件数，SKU 池用于展示与导出，不能替代订单清单。
   var pickQty = 0;
   for (var i = 0; i < orderNos.length; i++) pickQty += (qtyMap[orderNos[i]] || 0);
   return {
@@ -434,6 +454,10 @@ function slotsToMixSegs(slots, qtyMap) {
 
 /* ---------- 9. 单渠道分析 ---------- */
 function analyzeChannel(id, records, qtyMap, p) {
+  // 先按原始品种类型建池，再按吸收档位迁移订单；迁移后才生成最终分段和索引。
+  // 返回的原始分类统计与最终分段统计口径不同：被吸收的多件仍是原始多件订单。
+  p=Object.assign({},DEFAULT_UNIFIED,p);
+  if(!Number.isSafeInteger(p.paperSegs) || p.paperSegs<1) p.paperSegs=1;
   var singleMap = new Map(), multiMap = new Map(), mixGroups = new Map();
   var singleCount = 0, multiCount = 0, mixCount = 0;
   records.forEach(function (r) {
@@ -486,12 +510,12 @@ function analyzeChannel(id, records, qtyMap, p) {
   hotSeq.forEach(function (g) { hotOrderCount += g.count; });
   paperSeq.forEach(function (g) { paperOrderCount += g.count; });
 
-  /* 爆品 / 单件paper 容量分段 */
+  /* 容量仅作用于爆品；单件按指定段数连续均衡，SKU 不拆散。 */
   var hotSegs = splitOversizedHotSegments(
     segFromItems('hot', '爆品', partitionByCapacity(hotSeq, p.capacity), qtyMap),
     qtyMap
   );
-  var paperSegs = segFromItems('paper', '单件paper-', partitionByCapacity(paperSeq, p.capacity), qtyMap);
+  var paperSegs = segFromItems('paper', '单件paper-', linearPartition(paperSeq, Math.min(p.paperSegs,Math.max(1,paperSeq.length))), qtyMap);
 
   /* 原始混件组件与离散分段 */
   var mixComponents = buildComponents(mixSeq);
@@ -605,6 +629,14 @@ function analyzeChannel(id, records, qtyMap, p) {
   finalMultiSegs.forEach(function (seg) { seg.skuPool.forEach(function (sp) { multiSegMap.set(sp.sku, seg.name); }); });
 
   var segments = hotSegs.concat(finalPaperSegs, finalMultiSegs, finalMixSegs);
+  // 最后一道守恒检查：本渠道每个订单必须且只能出现一次，不能只比较总数。
+  // 总数相等仍可能同时发生漏单和重单；集合成员检查也能发现跨渠道混入。
+  var expectedOrders=new Set(records.map(function(r){return r.orderNo;})), assignedOrders=new Set();
+  segments.forEach(function(seg){seg.orderNos.forEach(function(no){
+    if(!expectedOrders.has(no)||assignedOrders.has(no)) throw new Error(id+' 分段订单重复或不属于当前渠道：'+no);
+    assignedOrders.add(no);
+  });});
+  if(assignedOrders.size!==expectedOrders.size) throw new Error(id+' 分段订单不完整，请检查规划参数');
   var segByName = new Map();
   segments.forEach(function (s) { segByName.set(s.name, s); });
   var byType = { hot: hotSegs, paper: finalPaperSegs, multi: finalMultiSegs, mix: finalMixSegs };
@@ -613,7 +645,7 @@ function analyzeChannel(id, records, qtyMap, p) {
     id: id, name: id,
     total: records.length,
     singleCount: singleCount, multiCount: multiCount, mixCount: mixCount,
-    params: { hotLine: p.hotLine, capacity: p.capacity, multiSegs: p.multiSegs, mixSegs: p.mixSegs, absorb: p.absorb },
+    params: { hotLine: p.hotLine, capacity: p.capacity, paperSegs: p.paperSegs, multiSegs: p.multiSegs, mixSegs: p.mixSegs, absorb: p.absorb },
     hotSeq: hotSeq, paperSeq: paperSeq, singleSeq: singleSeq, multiSeq: multiSeq, mixSeq: mixSeq,
     hotSkuCount: hotSeq.length, hotOrderCount: hotOrderCount,
     paperSkuCount: paperSeq.length, paperOrderCount: paperOrderCount,
@@ -634,6 +666,7 @@ function sortByDefault(chans) {
   return chans;
 }
 function sortByFixed(chans, mode) {
+  // 固定业务顺序与“空渠道沉底”同时生效；未识别始终最后，H/G 占据 USPS 的位置。
   var fixed = mode === 'merged' ? FIXED_MERGED_ORDER : uspsChannelList(FIXED_CHANNEL_ORDER, chans.some(function (ch) { return ch.id === 'USPS-H' || ch.id === 'USPS-G'; }));
   var rank = new Map();
   fixed.forEach(function (id, i) { rank.set(id, i); });
@@ -675,9 +708,12 @@ function buildClassSeq(records) {
 
 /* ---------- 12. 全量分析 ---------- */
 function analyze(records, qtyMap, mode, paramsFor, uspsSplit) {
+  // 拆分保留识别渠道；归并将 CBT/CBS 外的订单放入普通（包含 USPS-H/G）。
+  // 常驻渠道即使无单也保留，以便界面稳定展示和参数调整。
   var resolver = typeof paramsFor === 'function' ? paramsFor : function (id) {
     return (paramsFor && paramsFor[id]) || {
       hotLine: DEFAULT_UNIFIED.hotLine, capacity: DEFAULT_UNIFIED.capacity,
+      paperSegs: DEFAULT_UNIFIED.paperSegs,
       multiSegs: DEFAULT_UNIFIED.multiSegs, mixSegs: DEFAULT_UNIFIED.mixSegs, absorb: DEFAULT_UNIFIED.absorb
     };
   };
@@ -724,6 +760,8 @@ function selectedOrderCount(analysis, channelSelected, segSelected) {
   }, 0);
 }
 function selectedSkuCount(analysis, records, channelSelected, segSelected) {
+  // 先得到激活订单集合，再遍历订单的全部 SKU 去重；不能累加分段 SKU 数，
+  // 也不能只取 sku1，因为跨分段共享 SKU 和混件中的额外 SKU 都会影响结果。
   var orderNos = new Set();
   analysis.channels.forEach(function (ch) {
     if (!channelSelected.has(ch.id)) return;
@@ -751,6 +789,8 @@ function channelEnabledByDefault(ch) {
   return Boolean(ch && ch.total > 0 && ch.id !== '未识别');
 }
 function collectOrdinaryAbsorbedOrderNos(baseAnalysis, channelSelected, segSelected) {
+  // 来源必须是未进化的分析结果。渠道关闭或分段关闭任一成立即可被普通吸收；
+  // CBT/CBS 永不参与，USPS-H/G 与其他拆分渠道遵循同一规则。
   var absorbed = new Set();
   baseAnalysis.channels.forEach(function (ch) {
     if (ch.id === 'CBT' || ch.id === 'CBS' || ch.id === '未识别' || ch.id === '普通') return;
@@ -763,6 +803,8 @@ function collectOrdinaryAbsorbedOrderNos(baseAnalysis, channelSelected, segSelec
   return absorbed;
 }
 function buildOrdinaryEvolvedAnalysis(baseAnalysis, records, qtyMap, paramsFor, channelSelected, segSelected) {
+  // 只重建普通的订单池，不从源分析中物理删除订单。源分段关闭后不参与导出，
+  // 普通再分段后参与导出；这样退化时恢复源数据，不需要反向修改原始订单。
   var absorbed = collectOrdinaryAbsorbedOrderNos(baseAnalysis, channelSelected, segSelected);
   var ordinaryRecords = records.filter(function (record) {
     return record.channelId === '未识别' || absorbed.has(record.orderNo);
@@ -778,6 +820,7 @@ function buildOrdinaryEvolvedAnalysis(baseAnalysis, records, qtyMap, paramsFor, 
  * 13. 导出：9 个工作表
  * ============================================================= */
 function collectBlocks(channels, selected, segSelected) {
+  // 工作簿各表共用此激活口径；只关分段或只关渠道都会排除对应订单。
   var blocks = [];
   channels.forEach(function (ch) {
     if (!selected.has(ch.id)) return;
@@ -898,6 +941,8 @@ function sheetGroupSkuPool(blocks) {
 
 /* ---- 工作表三：波次表 ---- */
 function sheetWaveTable(blocks, waveNos) {
+  // waveRefs 保留内部渠道、分段身份及行号用于回填；显示为 USPS 的 H/G 行
+  // 仍必须有不同的内部身份，不能用导出后的显示渠道反查生成结果。
   var header = ['渠道类型', '姓名', '波次号', '类型', '分发时间', 'SKU数量', '应拣单数', '应拣件数', '结束时间'];
   var aoa = [header.slice()], styles = [], waveRefs = [];
   for (var c = 0; c < 9; c++) styles.push({ r: 0, c: c, s: { font: { bold: true }, alignment: { horizontal: 'center', vertical: 'center' } } });
@@ -945,7 +990,8 @@ function sheetChannelStats(channels, selected, segSelected) {
   push('多件', function (c) { return c.multiCount; });
   push('混件', function (c) { return c.mixCount; });
   push('爆品线', function (c) { return c.params.hotLine; });
-  push('波次容量', function (c) { return c.params.capacity; });
+  push('爆品容量', function (c) { return c.params.capacity; });
+  push('单件分段数', function (c) { return c.params.paperSegs; });
   push('多件分段数', function (c) { return c.params.multiSegs; });
   push('混件分段数', function (c) { return c.params.mixSegs; });
   push('混件吸收', function (c) { return c.params.absorb + '-' + ABSORB_NAMES[c.params.absorb]; });
@@ -985,6 +1031,8 @@ function sheetChannelStats(channels, selected, segSelected) {
 
 /* ---- 工作表五：客户统计（仅统计本次实际导出的订单） ---- */
 function buildCustomerStats(records, blocks) {
+  // 仅统计实际导出的订单；客户身份由名称和代码共同确定，SKU 按客户全局去重。
+  // 渠道构成使用订单原始识别渠道，不以被吸收后的“普通”替代物流来源。
   var selectedOrderNos = new Set();
   blocks.forEach(function (block) {
     block.segs.forEach(function (seg) {
@@ -1151,7 +1199,7 @@ function seqSheetBase(name, selChans, colCount, headers) {
   return { name: name, aoa: aoa, merges: merges, styles: styles, addRows: addRows };
 }
 
-/* ---- 工作表五：单件SKU序列 ---- */
+/* ---- 工作表六：单件SKU序列 ---- */
 function sheetSingleSeq(channels, selected, segSelected) {
   var selChans = channels.filter(function (c) { return selected.has(c.id); });
   var sheet = seqSheetBase('单件SKU序列', selChans, 5, ['排序', 'SKU', '出现数量', '分段', '分段总订单数']);
@@ -1181,7 +1229,7 @@ function sheetSingleSeq(channels, selected, segSelected) {
   return sheet;
 }
 
-/* ---- 工作表六：多件SKU序列 ---- */
+/* ---- 工作表七：多件SKU序列 ---- */
 function sheetMultiSeq(channels, selected, segSelected) {
   var selChans = channels.filter(function (c) { return selected.has(c.id); });
   var sheet = seqSheetBase('多件SKU序列', selChans, 3, ['排序', 'SKU', '订单数量']);
@@ -1200,7 +1248,7 @@ function sheetMultiSeq(channels, selected, segSelected) {
   return sheet;
 }
 
-/* ---- 工作表七：混件SKU序列 ---- */
+/* ---- 工作表八：混件SKU序列 ---- */
 function sheetMixSeq(channels, selected, segSelected) {
   var selChans = channels.filter(function (c) { return selected.has(c.id); });
   var sheet = seqSheetBase('混件SKU序列', selChans, 3, ['排序', 'SKU集合', '订单数量']);
@@ -1243,6 +1291,8 @@ function sheetClassSeq(classSeq) {
 
 /* ---- 汇总导出数据 ---- */
 function buildExport(analysis, exportState) {
+  // 返回工作表规格而不是立即下载。提交任务时会深拷贝此结果作为不可变计划，
+  // 后续即使用户修改页面，也只能向原计划的 waveRefs 回填已确认波次。
   var selected = exportState.channelSelected;
   var segSelected = exportState.segSelected;
   var blocks = collectBlocks(analysis.channels, selected, segSelected);
@@ -1290,6 +1340,8 @@ function crc32(u8) {
   return (crc ^ 0xFFFFFFFF) >>> 0;
 }
 function zipStore(files) {
+  // 使用 ZIP STORE（不压缩）封装 OOXML：CRC、长度和偏移均按 UTF-8 字节计算。
+  // 这是样式完整导出的底层封装，不能把 JS 字符串长度当成 ZIP 字节长度。
   var enc = new TextEncoder();
   var parts = [], offset = 0, central = [];
   function pushU16(v) { var b = new Uint8Array(2); b[0] = v & 255; b[1] = (v >>> 8) & 255; parts.push(b); offset += 2; }
@@ -1440,6 +1492,8 @@ function strEsc(s) {
 }
 
 function sheetToXml(spec, reg) {
+  // reg 是本表已注册的样式网格（grid/nRows/nCols），不是 StyleRegistry 本体。
+  // 网格中的样式 ID 来自跨表共享注册表；先收集所有表，再输出最终 styles.xml。
   var aoa = spec.aoa;
   var out = ['<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
     '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'];

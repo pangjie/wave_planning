@@ -1,3 +1,4 @@
+# 回归范围：项目默认自动化配置能加载且符合模型约束。
 from app.core.config import Settings
 
 

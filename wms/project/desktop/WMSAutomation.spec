@@ -1,4 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
+# PyInstaller 打包描述：包含后端、控制台静态产物、配置及 Playwright 运行资源。
+# 运行时数据由启动器配置到用户目录，不应把登录 profile 或任务历史打进应用包。
 
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 

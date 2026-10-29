@@ -13,6 +13,9 @@
 <title>波次规划工具</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230b0f14'/%3E%3Cpath d='M10 34c8-10 12-10 20 0s12 10 24-2' stroke='%237ee787' stroke-width='5' fill='none' stroke-linecap='round'/%3E%3Cpath d='M10 46c8-10 12-10 20 0s12 10 24-2' stroke='%2358a6ff' stroke-width='5' fill='none' stroke-linecap='round' opacity='.55'/%3E%3C/svg%3E">
 <style>
+/* 样式入口：主题变量 → 整体布局 → 控件/日志 → 规划表格 → 窄屏适配。
+   主题只改表现，不影响渠道身份和激活状态；业务状态由 app.js 的 class/属性驱动。
+   修改本文件后运行 planner/build.py，同步单文件版和服务使用的 frontend/dist。 */
 :root{
   --bg:#1c1730;
   --bg2:#251e3c;
@@ -157,6 +160,7 @@ button:focus-visible,[role="button"]:focus-visible,[role="checkbox"]:focus-visib
 @keyframes title-flow{to{background-position:240% 0}}
 
 /* Shared buttons and menus */
+/* 顶栏各动作复用 .bb；主题菜单需高于主内容层，不能被父容器 overflow 裁切。 */
 .bb{
   position:relative;isolation:isolate;overflow:hidden;
   min-height:40px;padding:0 14px;border:1px solid var(--line);border-radius:10px;
@@ -201,6 +205,8 @@ button:focus-visible,[role="button"]:focus-visible,[role="checkbox"]:focus-visib
 @keyframes menu-pop{from{opacity:0;transform:translateY(-7px) scale(.96)}to{opacity:1;transform:none}}
 
 /* Sidebar */
+/* 侧栏日志通过 flex 占据剩余高度；min-height/overflow 决定内容由日志自身滚动，
+   而不是把操作按钮挤出容器。窄屏的日志高度另在媒体查询中定义。 */
 .side{
   flex:0 0 250px;width:250px;min-width:0;padding:18px 15px 14px;
   display:flex;flex-direction:column;gap:12px;overflow-x:hidden;overflow-y:auto;
@@ -320,6 +326,8 @@ button:focus-visible,[role="button"]:focus-visible,[role="checkbox"]:focus-visib
 @keyframes metric-roll-pop{0%{opacity:.48;transform:translateY(8px) scale(.94);filter:blur(1px)}52%{opacity:1;transform:translateY(-2px) scale(1.035);filter:none}100%{transform:none}}
 
 /* Planning matrix */
+/* .twrap 是表格滚动容器。表头 top:0，统一调整行 top:48px，后者必须等于表头高度。
+   两行分别使用 z-index 5/4 和不透明背景，避免滚动渠道内容从下方透出。 */
 .twrap{flex:1;width:100%;max-width:100%;min-height:0;overflow:auto;scrollbar-gutter:stable;background:color-mix(in srgb,var(--bg) 34%,transparent)}
 .pt{width:100%;min-width:1180px;border-spacing:0;border-collapse:separate;table-layout:fixed;background:transparent}
 .pt th,.pt td{height:48px;padding:8px 9px;border-right:1px solid color-mix(in srgb,var(--line) 80%,transparent);border-bottom:1px solid color-mix(in srgb,var(--line) 80%,transparent);text-align:center;vertical-align:middle;white-space:nowrap}
@@ -328,12 +336,13 @@ button:focus-visible,[role="button"]:focus-visible,[role="checkbox"]:focus-visib
 .pt th.left,.pt td.left{text-align:left}.pt th.left{padding-left:12px}
 .pt th.type-head{text-align:center}.pt th.type-head .tog,.pt th.type-head .type-tog{vertical-align:middle}
 .pt tbody .prow{transition:background .15s,opacity .15s}.pt tbody .prow:hover{background:linear-gradient(90deg,color-mix(in srgb,var(--accent) 9%,transparent),color-mix(in srgb,var(--accent2) 4%,transparent),color-mix(in srgb,var(--accent) 7%,transparent))}.pt tbody .prow:hover td{box-shadow:inset 0 1px 0 color-mix(in srgb,var(--accent) 24%,transparent),inset 0 -1px 0 color-mix(in srgb,var(--accent2) 14%,transparent)}
-.pt .prow td{height:68px;padding-top:11px;padding-bottom:11px;vertical-align:top}.pt .prow td:not(.segtd){padding-top:20px}
+.pt .prow td{height:60px;padding-top:8px;padding-bottom:8px;vertical-align:top}.pt .prow td:not(.segtd){padding-top:16px}
+.pt td.left{padding-left:6px;padding-right:6px}
 .pt .prow.off{opacity:.48}.pt .prow.off:hover{opacity:.62}
 .pt .urowe{background:linear-gradient(90deg,color-mix(in srgb,var(--accent) 8%,var(--surface)),color-mix(in srgb,var(--surface) 78%,transparent))}.pt .urowe td{position:sticky;top:48px;z-index:4;height:51px;border-bottom-color:color-mix(in srgb,var(--accent) 28%,var(--line));background:linear-gradient(90deg,color-mix(in srgb,var(--surface) 92%,var(--accent) 8%),color-mix(in srgb,var(--surface) 96%,var(--accent2) 4%));color:var(--dim);box-shadow:0 1px 0 color-mix(in srgb,var(--accent) 28%,var(--line)),0 8px 18px color-mix(in srgb,var(--shadow) 18%,transparent)}
 .pt .urowe td:first-child{color:var(--fg);font-weight:800;letter-spacing:.3px}
 .pt td.num{color:var(--ok);font-size:15px;font-weight:900;font-variant-numeric:tabular-nums;text-shadow:0 0 15px color-mix(in srgb,var(--ok) 28%,transparent)}
-.pt td.segtd{padding:8px 7px;text-align:left;white-space:normal;vertical-align:middle}
+.pt td.segtd{padding:6px 7px;text-align:left;white-space:normal;vertical-align:middle}
 .pt .urowe td.segtd{text-align:center}
 .type-count{display:inline-flex;align-items:baseline;gap:3px;padding:5px 7px;border-radius:7px;background:color-mix(in srgb,var(--bg) 37%,transparent);font-size:12px}.type-count .wc{color:var(--accent);font-weight:900}.type-count .oc{color:var(--ok);font-weight:850}
 
@@ -363,6 +372,8 @@ button:focus-visible,[role="button"]:focus-visible,[role="checkbox"]:focus-visib
 .tog:hover{border-color:var(--accent2)}.type-tog{vertical-align:middle;cursor:pointer;user-select:none}
 
 .stepper{display:inline-flex;align-items:center;justify-content:center;gap:2px;min-width:64px}
+.pt td:has(> .stepper){padding-left:3px;padding-right:3px}
+.pt td:has(> .stepper) > small{display:block;font-size:11px;white-space:normal;margin-top:4px}
 .arr{
   width:18px;height:18px;display:inline-grid;place-items:center;border:1px solid transparent;border-radius:6px;
   color:var(--accent);font-size:11px;font-weight:900;cursor:pointer;user-select:none;transition:background .14s,border-color .14s,color .14s;
@@ -372,7 +383,7 @@ button:focus-visible,[role="button"]:focus-visible,[role="checkbox"]:focus-visib
 .aval{display:inline-flex;align-items:center;justify-content:center;min-width:48px;padding:5px 7px;border:1px solid color-mix(in srgb,var(--warn) 28%,var(--line));border-radius:7px;background:color-mix(in srgb,var(--warn) 7%,transparent);color:var(--warn);font-size:12px;font-weight:900;cursor:pointer;user-select:none;transition:background .14s,border-color .14s}.aval:hover{background:color-mix(in srgb,var(--warn) 15%,transparent);border-color:var(--warn)}
 .prow.off .arr,.prow.off .pval,.prow.off .aval{color:var(--dim)}.prow.off .aval{border-color:var(--line);background:transparent}
 .seg-line{
-  position:relative;width:max-content;max-width:100%;min-height:31px;margin:3px 0;padding:5px 22px 5px 9px;
+  position:relative;width:max-content;max-width:100%;min-height:29px;margin:2px 0;padding:4px 22px 4px 9px;
   display:flex;align-items:center;overflow:hidden;border:1px solid color-mix(in srgb,var(--accent) 18%,var(--line));border-radius:8px;
   background:color-mix(in srgb,var(--accent) 6%,transparent);cursor:pointer;user-select:none;
   transition:background .14s,border-color .14s,transform .14s,opacity .14s;
@@ -390,6 +401,8 @@ button:focus-visible,[role="button"]:focus-visible,[role="checkbox"]:focus-visib
 /* Task status strip */
 .wms-panel{flex:0 0 auto;min-width:0;background:color-mix(in srgb,var(--surface2) 82%,transparent);border-top:1px solid var(--line)}.wms-panel[hidden]{display:none}.wms-panel-bar{min-height:42px;padding:7px 14px;display:flex;align-items:center;gap:10px;font-size:13px}.wms-state{padding:4px 7px;border-radius:6px;background:var(--surface);font-weight:900;white-space:nowrap}.wms-state.running,.wms-state.queued{color:var(--accent2)}.wms-state.succeeded{color:var(--ok)}.wms-state.partial{color:var(--warn)}.wms-state.failed{color:var(--err)}.wms-state.cancelled{color:var(--dim)}.wms-msg{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;color:var(--dim);white-space:nowrap}.spacer{flex:1}
 
+/* 窄屏切换为页面纵向滚动；桌面版则让表格、侧栏各自滚动。
+   调整 overflow/min-height 时须同时验证日志可见区域和两行吸顶，不能只看整页截图。 */
 /* Responsive */
 @media(max-width:1180px){
   .shell{padding:12px}.side{flex-basis:236px;width:236px}.dash-summary{grid-template-columns:1fr}.summary-title{padding:5px 8px}.metric-grid{grid-template-columns:repeat(5,minmax(0,1fr))}

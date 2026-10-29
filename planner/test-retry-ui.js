@@ -1,3 +1,4 @@
+// 浏览器回归：失败任务重试入口、原任务身份和快照恢复；模拟后端记录提交请求。
 'use strict';
 const path = require('path');
 const T = require('./test-helpers.js');

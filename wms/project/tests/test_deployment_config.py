@@ -1,3 +1,4 @@
+# 回归范围：部署环境、浏览器配置和应用资源目录契约。
 """Local deployment contracts; mocked browser and temporary bundle/runtime only."""
 import importlib.util
 import json

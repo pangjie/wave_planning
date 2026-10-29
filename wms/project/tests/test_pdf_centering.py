@@ -1,3 +1,4 @@
+# 回归范围：构造 PDF 绘制对象，验证内容平移、尺寸和异常边界。
 from pathlib import Path
 
 import pdfplumber

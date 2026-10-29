@@ -1,3 +1,5 @@
+// 测试用 HTTP 服务：在临时回环端口提供可控任务、文件、截单状态和响应延迟。
+// 模拟的是本项目后端契约，不是生产 WMS 页面；失败/竞态由各测试显式设置。
 /* 独立随机回环端口的模拟 WMS：供 test-wms-ui.js 与集成验证复用。
  * 行为：health/jobs 增删查/取消/导出文件下载 + 测试控制面（/api/__test/*）。
  * 独立于共享基建 test-helpers.js，便于单独维护。 */
@@ -5,7 +7,7 @@
 const fs = require('fs');
 const http = require('http');
 
-function createMockServer({ samplePath, htmlSource, waveRecords = [], retryHandler = null, schedule = null }) {
+function createMockServer({ samplePath, htmlSource, waveRecords = [], retryHandler = null, schedule = null, responseDelays = {} }) {
   const timers = new Set();
   const later = (fn, ms) => {
     const timer = setTimeout(() => { timers.delete(timer); fn(); }, ms);
@@ -61,6 +63,7 @@ function createMockServer({ samplePath, htmlSource, waveRecords = [], retryHandl
     const url = new URL(req.url, 'http://127.0.0.1');
     const p = url.pathname;
     try {
+      if(responseDelays[p]) await new Promise(resolve=>later(resolve,responseDelays[p]));
       /* 测试控制面 */
       if (p === '/api/__test/requests') return json(res, 200, requests);
       if (p === '/api/__test/clear') { requests.length = 0; return json(res, 200, { ok: true }); }

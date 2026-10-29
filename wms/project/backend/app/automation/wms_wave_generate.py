@@ -1,3 +1,5 @@
+# 生成波次按提交分段顺序执行；搜索、取消数量、实际勾选数都需在提交前核对。
+# segment_wave 表示已确认业务结果；关闭弹窗等收尾失败不得让同一分段再次生成。
 from __future__ import annotations
 
 import json
@@ -81,6 +83,8 @@ class WmsWaveGenerateAutomation:
         segments: list[dict[str, object]],
     ) -> WaveGenerateResult:
         cfg = self.config
+        from app.services.job_plans import validate_generation_segments
+        validate_generation_segments(segments, cfg.multi_search_max_lines)
         effective_headless = resolve_headless(self.settings, headless)
         warnings: list[str] = []
         browser_label = "无头" if effective_headless else "有头"
@@ -117,20 +121,6 @@ class WmsWaveGenerateAutomation:
                     if stage == "wave_submitting":
                         submitted = True
                     await progress(stage, message)
-                if len(order_nos) > cfg.multi_search_max_lines:
-                    outcomes.append(SegmentWaveOutcome(
-                        channel=channel, seg_name=seg_name,
-                        order_count=len(order_nos), wave_no=None,
-                        note=(
-                            f"分段出库单号 {len(order_nos)} 个超过多项搜索单次上限 "
-                            f"{cfg.multi_search_max_lines} 行，已跳过（请把该分段拆小后重试）。"
-                        ),
-                    ))
-                    await progress(
-                        "segment_failed",
-                        f"分段 {label} 出库单号超过多项搜索单次上限，已跳过。",
-                    )
-                    continue
                 await progress(
                     "searching",
                     f"第 {index}/{total} 个分段：{label}，准备粘贴 {len(order_nos)} 个出库单号。",
@@ -268,6 +258,7 @@ class WmsWaveGenerateAutomation:
                 f"页面存在未处理的系统弹窗，已停止（请先在 WMS 中处理）：{text}"
             )
 
+    # 只在待处理列表生成；已取消数量用于解释计划数与待处理数的差额。
     async def _select_pending_tab(self, page: Page) -> None:
         cfg = self.config
         tab = page.locator('[role="tab"]', has_text=cfg.pending_tab_text)
@@ -284,6 +275,7 @@ class WmsWaveGenerateAutomation:
         )
 
     async def _set_page_size(self, page: Page) -> None:
+        # 全选只作用于当前页；必须设置并读回真实页容量，否则默认 20 条会生成短波次。
         cfg = self.config
         sel = cfg.selectors
         size_containers = page.locator(sel.pagination_size)
@@ -335,6 +327,8 @@ class WmsWaveGenerateAutomation:
             "调整每页条数后页面加载超时。",
         )
 
+    # 单分段：搜索 → 待处理数量核对 → 全选及已选数核对 → 提交和确认波次。
+    # 提交前的查询故障与提交后结果未知必须分开处理，后者不能自动重做。
     async def _generate_one(
         self,
         page: Page,
@@ -613,6 +607,8 @@ class WmsWaveGenerateAutomation:
         expected: int,
     ) -> None:
         """读取 WMS 显示的“已选 X 条”，在生产提交前核对实际勾选数。"""
+        # expected 来自搜索结果确认后的待处理数，可能小于计划数（其余已取消）。
+        # 不能拿最初的计划数量硬比，也不能仅凭分页容量已设置就认定全部选中。
         selected = page.locator(self.config.selectors.selected_total)
         if await selected.count() != 1:
             raise AutomationError(

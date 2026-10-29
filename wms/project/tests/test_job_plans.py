@@ -1,3 +1,4 @@
+# 回归范围：提交快照、规划身份及波次表引用的一致性。
 """B4 plan identity/snapshot contracts; only mock tasks and temporary artifacts."""
 from types import SimpleNamespace
 from unittest.mock import AsyncMock

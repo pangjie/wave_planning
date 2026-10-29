@@ -1,3 +1,4 @@
+# 回归范围：对页面定位注入故障，验证歧义或错误目标不会继续操作。
 """B5 fault-injected page targeting. No browser or WMS request is made."""
 from unittest.mock import AsyncMock, MagicMock
 

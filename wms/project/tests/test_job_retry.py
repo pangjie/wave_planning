@@ -1,3 +1,4 @@
+# 回归范围：重试使用原输入和检查点；已确认结果保留，未确认提交不重做。
 """Offline retry contracts: immutable inputs, checkpoints and no duplicate writes."""
 import asyncio
 import json

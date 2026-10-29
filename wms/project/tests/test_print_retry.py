@@ -1,3 +1,4 @@
+# 回归范围：模拟 WMS、使用真实临时 PDF 验证检查点复用与有序合并。
 """Real PDF artifacts, mocked WMS pages; no production browser is started."""
 from contextlib import asynccontextmanager
 from types import SimpleNamespace

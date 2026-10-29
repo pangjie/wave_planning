@@ -1,3 +1,4 @@
+# 回归范围：本机运行目录的互斥占用与退出释放。
 """Local runtime ownership uses only disposable paths and fake automation."""
 
 from __future__ import annotations
