@@ -35,6 +35,7 @@ async def test_confirmed_results_survive_context_and_driver_close(mode, isolated
 
     monkeypatch.setattr(common, "async_playwright", Driver)
     export = WmsExportAutomation(isolated_runtime, cfg)
+    monkeypatch.setattr('app.automation.wms_export.normalize_order_file', lambda _: 1)
     generate = WmsWaveGenerateAutomation(isolated_runtime, cfg.wave_generation)
     pick = WmsWavePickAutomation(isolated_runtime, cfg)
     printer = WmsWavePrintAutomation(isolated_runtime, cfg)

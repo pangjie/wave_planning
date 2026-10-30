@@ -23,6 +23,7 @@ from app.automation.common import (
 )
 from app.automation.export_task_center import ExportTaskCenter, TaskCenterItem
 from app.core.config import AutomationConfig, Settings
+from app.services.order_workbook import normalize_order_file
 
 
 @dataclass(slots=True)
@@ -83,6 +84,21 @@ class WmsExportAutomation:
                 )
             await progress("downloading", f"导出已完成，正在下载 {task.filename}")
             downloaded_file = await self.task_center.download(page, task, warnings=warnings)
+            await progress("normalizing_orders", "订单文件已下载，正在按订单号和 SKU 合并拣货库位明细。")
+            # 全量、截单预导出、增量和恢复下载共用这个出口，成功前不能交付双表文件。
+            # 取消时仍等本地原子写入结束，避免任务释放占用后遗留后台文件写入。
+            normalization = asyncio.create_task(asyncio.to_thread(normalize_order_file, downloaded_file))
+            try:
+                count = await asyncio.shield(normalization)
+            except asyncio.CancelledError:
+                try:
+                    await normalization
+                except Exception:
+                    pass  # 保留取消语义；合并失败时原始下载文件仍在。
+                raise
+            except Exception as exc:
+                raise AutomationError(f"订单库位合并失败，原始下载已保留在 {downloaded_file}：{exc}") from exc
+            await progress("orders_normalized", f"已合并 {count} 单的库位明细，校验完成，交付单表出库单。")
             return ExportResult(
                 mode="export",
                 template=selected_template,

@@ -45,6 +45,8 @@ async def test_date_filter_commits_with_enter_and_checks_readback(isolated_runti
 async def test_resume_known_export_never_resubmits(isolated_runtime,monkeypatch):
     from contextlib import asynccontextmanager
     from app.automation import wms_export as mod
+    normalize = MagicMock(return_value=1)
+    monkeypatch.setattr(mod, 'normalize_order_file', normalize)
     from app.automation.export_task_center import TaskCenterItem
     page=MagicMock(goto=AsyncMock(),url='https://example.invalid')
     context=SimpleNamespace(pages=[page])
@@ -58,6 +60,7 @@ async def test_resume_known_export_never_resubmits(isolated_runtime,monkeypatch)
     automation.task_center.download=AsyncMock(return_value=isolated_runtime.downloads_dir/'test.xlsx')
     await automation.run(AsyncMock(),headless=True,checkpoint={'submitted':True,'task_key':item.key})
     automation._prepare_and_submit.assert_not_called()
+    normalize.assert_called_once_with(isolated_runtime.downloads_dir/'test.xlsx')
     assert automation.task_center.wait_until_downloadable.call_args.kwargs['detected_key']==item.key
 
 

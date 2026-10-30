@@ -59,7 +59,7 @@ async def test_waits_until_required_template_fields_are_loaded_and_stable() -> N
         "Order No/订单号",
         "Tracking No/物流跟踪号",
     ]
-    complete = old_complete + ["Customer/客户"]
+    complete = old_complete + ["Customer/客户", "推荐拣货库位"]
 
     labels = MagicMock()
     labels.evaluate_all = AsyncMock(
@@ -220,6 +220,8 @@ async def test_run_uses_one_headless_context_until_download_completes(
 
     automation = make_automation()
     target = tmp_path / "ParcelOutbound_20260826000000.xlsx"
+    normalized = MagicMock(return_value=1)
+    monkeypatch.setattr(mod, "normalize_order_file", normalized)
     task = TaskCenterItem(
         filename="ParcelOutbound_20260826000000.xlsx",
         created_at="t", status="", icon_class="", downloadable=True,
@@ -273,6 +275,7 @@ async def test_run_uses_one_headless_context_until_download_completes(
     assert opens == 1
     assert context_order == ["enter", "download", "exit"]
     assert result.downloaded_file == str(target)
+    normalized.assert_called_once_with(target)
     reset_download_state.assert_called_once_with(
         automation.settings.browser_profile_dir
     )

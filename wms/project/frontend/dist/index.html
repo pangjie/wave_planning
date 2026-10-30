@@ -2784,7 +2784,7 @@ if (typeof module !== 'undefined' && module.exports) {
         '<td class="num" data-channel-orders>' + effectiveChannelOrderSum(ch) + '</td>' +
         '<td>' + paramCell(ch.id, 'capacity', p.capacity) + '</td>' +
         '<td>' + paramCell(ch.id, 'hotLine', p.hotLine) + '</td>' +
-        '<td title="按订单数均衡分段，同一 SKU 不拆散；全量吸收时单件并入混件">' + paramCell(ch.id, 'paperSegs', p.paperSegs) + (p.absorb===4?'<small class="dim">并入混件</small>':'') + '</td>' +
+        '<td title="按订单数均衡分段，同一 SKU 不拆散；全量吸收时单件并入混件">' + paramCell(ch.id, 'paperSegs', p.paperSegs) + '</td>' +
         '<td>' + paramCell(ch.id, 'multiSegs', p.multiSegs) + '</td>' +
         '<td>' + paramCell(ch.id, 'mixSegs', p.mixSegs) + '</td>' +
         '<td>' + absorbCell(ch.id, p.absorb) + '</td>';
@@ -3633,6 +3633,8 @@ if (typeof module !== 'undefined' && module.exports) {
     if(stage==='segment_wave') return '波次已生成';
     if(stage==='print_checkpoint') return '打印文件已保存';
     if(stage==='export_checkpoint') return '导出任务已记录';
+    if(stage==='normalizing_orders') return '合并订单库位明细';
+    if(stage==='orders_normalized') return '订单与库位校验完成';
     if(/launch|navigat|opened|waiting_data/.test(stage)) return '准备浏览器和页面';
     if(/merg/.test(stage)) return '合并打印文档';
     if(/download/.test(stage)) return '下载订单文件';

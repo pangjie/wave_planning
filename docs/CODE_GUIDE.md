@@ -15,6 +15,7 @@
 | 任务和重试 | `wms/project/backend/app/services/job_manager.py` | 状态、检查点、结果留存、联程打印 |
 | 提交快照和波次索引 | `services/job_plans.py`、`services/wave_records.py` | 恢复导出、按规划回填；路径相对后端 app |
 | 截单 | `services/cutoff_schedule.py`、`services/cutoff_merge.py` | 时间边界、阶段推进、订单文件合并 |
+| 订单工作簿 | `services/order_workbook.py` | 按订单号和 SKU 合并库位明细、严格核对及原子写入 |
 | WMS 页面操作 | `wms/project/backend/app/automation/` | 导出、生成、拣货、打印及公共页面适配 |
 | 启动和部署 | `wms/project/scripts/`、`wms/project/desktop/` | 环境安装、服务管理、桌面包 |
 | 回归测试 | `planner/test-*.js`、`wms/project/tests/` | 计算守恒、UI、故障恢复及持久化契约 |
@@ -44,6 +45,8 @@
 ## 截单的边界
 
 每次运行固定自己的时间范围：预导出覆盖截单前一周至预导出边界，增量从边界前 30 秒至截单时刻。重复范围按文本订单号去重，增量整行覆盖同号旧记录。动态 SKU 列按列名对齐，最终回读校验后发布文件。
+
+所有新 WMS 下载在交付前先将“拣货库位明细”并入“出库单”：关联订单号，再按实际 SKU 对齐，不能依赖两张表的行序或 SKU 编号顺序。保留原订单字段，补充各 SKU 数量和库位。截单共用同一读写模块，增量整行替换也包括库位字段。
 
 这不是订单状态同步：预导出后取消、且未出现在增量中的订单仍可保留。调度依赖后端进程运行，不负责唤醒休眠电脑。后台产出文件，用户点击后才在页面加载分析。
 
