@@ -137,6 +137,7 @@ function locateSheet(wb) {
 function mapHeaders(headerRow) {
   var map = {};        // 归一化表头 -> 列索引
   var skuIdx = [];     // 已识别的 SKU n SKU 列（按 n 升序）
+  var locIdx = {};     // SKU n -> 推荐拣货库位列索引（按表头顺序）
   var missing = [];
   (headerRow || []).forEach(function (h, ci) {
     var n = normHeader(h);
@@ -144,13 +145,19 @@ function mapHeaders(headerRow) {
     if (!(n in map)) map[n] = ci;
     var m = SKU_COL_RE.exec(n);
     if (m) skuIdx.push({ n: parseInt(m[1], 10), ci: ci });
+    var lm = /^sku(\d+)recommendedpickinglocation\/推荐拣货库位\d+$/.exec(n);
+    if (lm) {
+      var ln = parseInt(lm[1], 10);
+      if (!locIdx[ln]) locIdx[ln] = [];
+      locIdx[ln].push(ci);
+    }
   });
   skuIdx.sort(function (a, b) { return a.n - b.n; });
   for (var i = 0; i < REQUIRED_COLS.length; i++) {
     if (!(REQUIRED_COLS[i] in map)) missing.push(REQUIRED_COLS_LABEL[REQUIRED_COLS[i]]);
   }
   if (missing.length) throw new Error('缺少必需列：' + missing.join('、'));
-  return { map: map, skuIdx: skuIdx };
+  return { map: map, skuIdx: skuIdx, locIdx: locIdx };
 }
 
 /* ---------- 4. 物流渠道识别 ---------- */
@@ -204,6 +211,7 @@ function buildRecords(dataRows, headerMap) {
         customer: customer,
         sku1: '',
         skus: [],
+        skuLocations: new Map(), // SKU -> Set(推荐拣货库位)；多行同单合并
         channelId: carrierUp === 'CBT' ? 'CBT' : (carrierUp === 'CBS' ? 'CBS' : trackingChannel(tracking)),
         carrierClass: carrierUp === 'CBT' ? 'CBT订单' : (carrierUp === 'CBS' ? 'CBS订单' : '普通订单'),
         qty: qty
@@ -213,10 +221,18 @@ function buildRecords(dataRows, headerMap) {
     }
     if (rec.uspsType !== 'USPS-H') rec.uspsType = uspsType(rawTracking);
     if (!rec.customer && customer) rec.customer = customer;
-    skus.forEach(function (s) {
+    skus.forEach(function (s, si) {
       if (s !== '' && rec.skus.indexOf(s) === -1) {
         rec.skus.push(s);
         if (!rec.sku1) rec.sku1 = s;  // 首个非空 SKU
+      }
+      if (s === '') return;
+      var locs = rec.skuLocations.get(s);
+      if (!locs) { locs = new Set(); rec.skuLocations.set(s, locs); }
+      var locCols = (headerMap.locIdx && headerMap.skuIdx[si]) ? (headerMap.locIdx[headerMap.skuIdx[si].n] || []) : [];
+      for (var li = 0; li < locCols.length; li++) {
+        var loc = text(row[locCols[li]]);
+        if (loc !== '') locs.add(loc);
       }
     });
   }
@@ -453,7 +469,153 @@ function slotsToMixSegs(slots, qtyMap) {
 }
 
 /* ---------- 9. 单渠道分析 ---------- */
-function analyzeChannel(id, records, qtyMap, p) {
+/* ---------- 单件库位优先（策略 B） ---------- */
+function paperLocationSegments(paperSeq, records, qtyMap, p, locationData) {
+  // 单件订单按 SKU/库位并查集合并；库位与 SKU 都不拆；无效分量进入最后一段。
+  var priority = (locationData && locationData.priority) || {};
+  var nonPicking = new Set((locationData && locationData.nonPicking) || []);
+  function hasPriority(loc) { return Object.prototype.hasOwnProperty.call(priority, loc); }
+  var recByOrder = new Map();
+  records.forEach(function (r) { recByOrder.set(r.orderNo, r); });
+  var items = [];
+  paperSeq.forEach(function (g) {
+    g.orderNos.forEach(function (no) {
+      var rec = recByOrder.get(no);
+      var sku = rec && rec.sku1 ? rec.sku1 : g.sku;
+      var locs = [];
+      if (rec && rec.skuLocations && rec.skuLocations.get(sku)) {
+        locs = Array.from(rec.skuLocations.get(sku));
+      }
+      items.push({ no: no, sku: sku, locs: locs });
+    });
+  });
+  if (!items.length) return { segments: [], warnings: [] };
+
+  var parent = new Map();
+  function find(x) {
+    if (!parent.has(x)) parent.set(x, x);
+    var r = x;
+    while (parent.get(r) !== r) r = parent.get(r);
+    while (parent.get(x) !== x) { var n = parent.get(x); parent.set(x, r); x = n; }
+    return r;
+  }
+  function union(a, b) { var ra = find(a), rb = find(b); if (ra !== rb) parent.set(ra, rb); }
+  items.forEach(function (it) {
+    union('S:' + it.sku, 'L:' + (it.locs[0] || ''));
+    for (var i = 1; i < it.locs.length; i++) union('L:' + it.locs[0], 'L:' + it.locs[i]);
+  });
+  var comps = new Map();
+  items.forEach(function (it) {
+    var root = find('S:' + it.sku);
+    var c = comps.get(root);
+    if (!c) { c = { orders: [], skus: new Set(), locs: new Set(), pris: [] }; comps.set(root, c); }
+    c.orders.push(it.no);
+    c.skus.add(it.sku);
+    it.locs.forEach(function (l) {
+      c.locs.add(l);
+      if (hasPriority(l)) c.pris.push(priority[l]);
+    });
+  });
+  var valid = [], invalid = [];
+  comps.forEach(function (c) {
+    var locs = Array.from(c.locs);
+    var bad = locs.length ? locs.filter(function (l) {
+      return !l || !hasPriority(l) || nonPicking.has(l);
+    }) : ['(无库位)'];
+    var row = {
+      orders: c.orders, skus: c.skus, locs: c.locs, bad: bad,
+      maxp: c.pris.length ? Math.max.apply(null, c.pris) : -Infinity
+    };
+    if (bad.length) invalid.push(row); else valid.push(row);
+  });
+  valid.sort(function (a, b) {
+    if (b.maxp !== a.maxp) return b.maxp - a.maxp;
+    var al = Array.from(a.locs).sort()[0] || '';
+    var bl = Array.from(b.locs).sort()[0] || '';
+    return al.localeCompare(bl, 'zh');
+  });
+  var k = Math.min(Math.max(1, p.paperSegs), Math.max(1, valid.length));
+  var parts = valid.length ? linearPartition(valid.map(function (c) {
+    return { count: c.orders.length, comp: c };
+  }), k) : [[]];
+  if (!parts.length) parts = [[]];
+  invalid.forEach(function (c) { parts[parts.length - 1].push({ count: c.orders.length, comp: c }); });
+
+  var segs = [];
+  var warnings = [];
+  parts.forEach(function (part, index) {
+    if (!part.length) return;
+    var seen = new Set(), orderNos = [], skuCounts = new Map();
+    part.forEach(function (item) {
+      item.comp.orders.forEach(function (no) {
+        if (seen.has(no)) return;
+        seen.add(no);
+        orderNos.push(no);
+        var rec = recByOrder.get(no);
+        var sku = rec && rec.sku1 ? rec.sku1 : '(空SKU)';
+        skuCounts.set(sku, (skuCounts.get(sku) || 0) + 1);
+      });
+    });
+    var pool = [];
+    skuCounts.forEach(function (count, sku) { pool.push({ sku: sku, count: count }); });
+    segs.push(finalizeSeg('paper', '单件paper-' + (index + 1), orderNos, pool, qtyMap));
+  });
+  invalid.forEach(function (c) {
+    c.bad.forEach(function (l) { if (warnings.indexOf(l) < 0) warnings.push(l); });
+  });
+  return { segments: segs, warnings: warnings };
+}
+
+function assertSegmentKinds(id, records, segments, p) {
+  // 订单原始类型必须与分段 kind 一致；吸收档位允许的迁移按业务规则放行。
+  // 运行期最后一道保护：宁可报错，也不能把性质矛盾的规划交给 WMS。
+  var recByOrder = new Map();
+  records.forEach(function (r) { recByOrder.set(r.orderNo, r); });
+  var singleCounts = new Map();
+  records.forEach(function (r) {
+    if (r.type === '单品单件') singleCounts.set(r.sku1, (singleCounts.get(r.sku1) || 0) + 1);
+  });
+  segments.forEach(function (seg) {
+    seg.orderNos.forEach(function (no) {
+      var r = recByOrder.get(no);
+      if (!r) throw new Error(id + ' ' + seg.name + '：订单 ' + no + ' 不属于当前渠道');
+      if (seg.kind === 'hot') {
+        if (r.type !== '单品单件' || (singleCounts.get(r.sku1) || 0) < p.hotLine) {
+          throw new Error(id + ' ' + seg.name + '：订单 ' + no + ' 不是爆品单件');
+        }
+      } else if (seg.kind === 'paper') {
+        if (r.type !== '单品单件' || (singleCounts.get(r.sku1) || 0) >= p.hotLine) {
+          throw new Error(id + ' ' + seg.name + '：订单 ' + no + ' 不是单件分段订单');
+        }
+      } else if (seg.kind === 'multi') {
+        if (r.type !== '单品多件') {
+          throw new Error(id + ' ' + seg.name + '：订单 ' + no + ' 不是多件订单');
+        }
+      } else if (seg.kind === 'mix') {
+        if (r.type === '多品混合') return;
+        if (r.type === '单品单件') {
+          if ((singleCounts.get(r.sku1) || 0) >= p.hotLine) {
+            throw new Error(id + ' ' + seg.name + '：爆品订单 ' + no + ' 进入混件');
+          }
+          if (p.absorb !== 4) {
+            throw new Error(id + ' ' + seg.name + '：单件订单 ' + no + ' 在未全量吸收时进入混件');
+          }
+        } else if (r.type === '单品多件') {
+          if (p.absorb === 1) {
+            throw new Error(id + ' ' + seg.name + '：多件订单 ' + no + ' 在关闭吸收时进入混件');
+          }
+        } else {
+          // 未知品种类型沿用既有“进入混件、绝不丢单”规则，不视为类型矛盾。
+          return;
+        }
+      } else {
+        throw new Error(id + ' ' + seg.name + '：未知分段类型 ' + seg.kind);
+      }
+    });
+  });
+}
+
+function analyzeChannel(id, records, qtyMap, p, paperStrategy, locationData) {
   // 先按原始品种类型建池，再按吸收档位迁移订单；迁移后才生成最终分段和索引。
   // 返回的原始分类统计与最终分段统计口径不同：被吸收的多件仍是原始多件订单。
   p=Object.assign({},DEFAULT_UNIFIED,p);
@@ -515,7 +677,15 @@ function analyzeChannel(id, records, qtyMap, p) {
     segFromItems('hot', '爆品', partitionByCapacity(hotSeq, p.capacity), qtyMap),
     qtyMap
   );
-  var paperSegs = segFromItems('paper', '单件paper-', linearPartition(paperSeq, Math.min(p.paperSegs,Math.max(1,paperSeq.length))), qtyMap);
+  var paperResult = {
+    segments: segFromItems('paper', '单件paper-', linearPartition(paperSeq, Math.min(p.paperSegs,Math.max(1,paperSeq.length))), qtyMap),
+    warnings: []
+  };
+  if (paperStrategy === 'location' && p.absorb !== 4 && paperSeq.length && locationData && locationData.priority) {
+    paperResult = paperLocationSegments(paperSeq, records, qtyMap, p, locationData);
+  }
+  var paperSegs = paperResult.segments;
+  var paperWarnings = paperResult.warnings || [];
 
   /* 原始混件组件与离散分段 */
   var mixComponents = buildComponents(mixSeq);
@@ -637,6 +807,7 @@ function analyzeChannel(id, records, qtyMap, p) {
     assignedOrders.add(no);
   });});
   if(assignedOrders.size!==expectedOrders.size) throw new Error(id+' 分段订单不完整，请检查规划参数');
+  assertSegmentKinds(id, records, segments, p);
   var segByName = new Map();
   segments.forEach(function (s) { segByName.set(s.name, s); });
   var byType = { hot: hotSegs, paper: finalPaperSegs, multi: finalMultiSegs, mix: finalMixSegs };
@@ -651,6 +822,7 @@ function analyzeChannel(id, records, qtyMap, p) {
     paperSkuCount: paperSeq.length, paperOrderCount: paperOrderCount,
     segments: segments, byType: byType, segByName: segByName,
     singleSegMap: singleSegMap, multiSegMap: multiSegMap, rawGroupSegMap: rawGroupSegMap,
+    paperWarnings: paperWarnings,
     mixSeqExtra: mixSeqExtra
   };
 }
@@ -707,7 +879,7 @@ function buildClassSeq(records) {
 }
 
 /* ---------- 12. 全量分析 ---------- */
-function analyze(records, qtyMap, mode, paramsFor, uspsSplit) {
+function analyze(records, qtyMap, mode, paramsFor, uspsSplit, paperStrategy, locationData) {
   // 拆分保留识别渠道；归并将 CBT/CBS 外的订单放入普通（包含 USPS-H/G）。
   // 常驻渠道即使无单也保留，以便界面稳定展示和参数调整。
   var resolver = typeof paramsFor === 'function' ? paramsFor : function (id) {
@@ -729,8 +901,11 @@ function analyze(records, qtyMap, mode, paramsFor, uspsSplit) {
     if (!byChan.has(id)) byChan.set(id, []);
   });
   var chans = [];
+  var warnings = [];
   byChan.forEach(function (recs, id) {
-    chans.push(analyzeChannel(id, recs, qtyMap, resolver(id)));
+    var ch = analyzeChannel(id, recs, qtyMap, resolver(id), paperStrategy, locationData);
+    (ch.paperWarnings || []).forEach(function (loc) { if (warnings.indexOf(loc) < 0) warnings.push(loc); });
+    chans.push(ch);
   });
   sortByDefault(chans);
   var totals = { all: records.length, single: 0, multi: 0, mix: 0 };
@@ -743,6 +918,8 @@ function analyze(records, qtyMap, mode, paramsFor, uspsSplit) {
   });
   return {
     mode: mode, uspsSplit: !!uspsSplit, channels: chans, totals: totals, waveStats: waveStats,
+    paperStrategy: paperStrategy === 'location' ? 'location' : 'sku',
+    warnings: warnings,
     classSeq: buildClassSeq(records), records: records, qtyMap: qtyMap
   };
 }
@@ -802,7 +979,7 @@ function collectOrdinaryAbsorbedOrderNos(baseAnalysis, channelSelected, segSelec
   });
   return absorbed;
 }
-function buildOrdinaryEvolvedAnalysis(baseAnalysis, records, qtyMap, paramsFor, channelSelected, segSelected) {
+function buildOrdinaryEvolvedAnalysis(baseAnalysis, records, qtyMap, paramsFor, channelSelected, segSelected, paperStrategy, locationData) {
   // 只重建普通的订单池，不从源分析中物理删除订单。源分段关闭后不参与导出，
   // 普通再分段后参与导出；这样退化时恢复源数据，不需要反向修改原始订单。
   var absorbed = collectOrdinaryAbsorbedOrderNos(baseAnalysis, channelSelected, segSelected);
@@ -810,10 +987,12 @@ function buildOrdinaryEvolvedAnalysis(baseAnalysis, records, qtyMap, paramsFor, 
     return record.channelId === '未识别' || absorbed.has(record.orderNo);
   });
   var ordinaryParams = typeof paramsFor === 'function' ? paramsFor('普通') : DEFAULT_UNIFIED;
-  var ordinary = analyzeChannel('普通', ordinaryRecords, qtyMap, ordinaryParams);
+  var ordinary = analyzeChannel('普通', ordinaryRecords, qtyMap, ordinaryParams, paperStrategy, locationData);
   var channels = baseAnalysis.channels.filter(function (ch) { return ch.id !== '未识别'; });
   channels.push(ordinary);
-  return Object.assign({}, baseAnalysis, { channels: channels });
+  var warnings = (baseAnalysis.warnings || []).slice();
+  (ordinary.paperWarnings || []).forEach(function (loc) { if (warnings.indexOf(loc) < 0) warnings.push(loc); });
+  return Object.assign({}, baseAnalysis, { channels: channels, warnings: warnings });
 }
 
 /* =============================================================

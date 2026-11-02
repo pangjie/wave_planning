@@ -9,7 +9,9 @@
 | 订单识别、分段、统计、Excel | `planner/core.js` | 业务计算与工作簿规格/文件写出 |
 | 勾选、参数、普通进退化、任务展示 | `planner/app.js` | 页面状态、缓存失效、API 交互 |
 | 页面结构与样式 | `planner/part1-body.html`、`planner/part0-head.html` | DOM 契约、主题、布局、滚动 |
-| 单文件页面构建 | `planner/build.py` | 同步根目录 HTML 和服务静态页面 |
+| 单文件页面构建 | `planner/build.py` | 同步根目录 HTML、服务静态页面和本地库位表副本 |
+| 库位表生成 | `planner/build_locations.py`、`planner/location-priority.local.json` | 内部库位导出 → 本地 JSON；不公开、不嵌入 HTML |
+| 单件库位策略 | `planner/core.js` 的 `paperLocationSegments` | SKU/库位并查集分量、优先级排序、连续均衡、异常最后一段 |
 | 后端启动和关闭 | `wms/project/backend/app/main.py` | 本机互斥、服务对象、清理生命周期 |
 | HTTP 请求 | `wms/project/backend/app/api/routes.py` | 请求校验、任务入口、文件响应 |
 | 任务和重试 | `wms/project/backend/app/services/job_manager.py` | 状态、检查点、结果留存、联程打印 |
@@ -26,7 +28,9 @@
 - `records` 是导入底稿；分析结果和普通吸收结果是派生数据。参数改变或来源勾选改变时必须使相应缓存失效。
 - `hot/paper/multi/mix` 是业务分类。显示文字不能替代分类判断，尤其波次表中的爆品也可能显示为“单件”。
 - 渠道与分段都打开才参与激活统计及导出。普通吸收来源的关闭分段仍保留在原始分析中，不能再作为激活分段重复导出。
-- 爆品容量只作用于爆品。单件按段数连续均衡，同 SKU 不拆；生成前的 WMS 搜索上限另由后端整批校验。
+- 爆品容量只作用于爆品。单件有 SKU 均衡（A）和库位优先（B）两种策略；B 同库位、同 SKU 不拆，按库位优先级降序做连续均衡。缺库位/无需拣货（XN）库位的分量整体进最后一段并 warning，不能丢单；`absorb=4` 时没有独立单件段，B 不创建。
+- 单件段内订单顺序不参与规划；只保证分段池内容。B 的段池超过 700 时前端在提交前禁用生成，后端仍整批校验。
+- `analyzeChannel` 在订单守恒检查后执行 `assertSegmentKinds`：hot/paper/multi/mix 的订单原始类型必须匹配，吸收档位允许的迁移除外。
 - 混件共享 SKU 的关系具有传递性，连通组件应整体分配。单渠道最终分段必须无重单、漏单和外来订单。
 - USPS-H/G 内部独立处理；波次表显示 USPS，回填仍依赖内部身份。
 
@@ -54,6 +58,6 @@
 
 注释应解释输入输出、单位、状态边界和处理原因，避免复述每行语法。规则变化时同步修改相邻注释与测试，不把旧设计意图写成当前已实现的保证。
 
-前端修改后运行 `wms/project/.venv/bin/python planner/build.py`。纯计算回归可从 `node planner/test-core.js` 与 `node --test planner/test-audit-regressions.js planner/test-paper-segments.js` 开始。后端在 `wms/project` 下运行 `.venv/bin/python -m pytest`。
+前端修改后运行 `wms/project/.venv/bin/python planner/build.py`（会复制本地库位表到 dist）。纯计算回归可从 `node planner/test-core.js`、`node planner/test-paper-location.js` 与 `node --test planner/test-audit-regressions.js planner/test-paper-segments.js` 开始；浏览器回归加 `node planner/test-paper-location-ui.js`。后端在 `wms/project` 下运行 `.venv/bin/python -m pytest`。
 
 浏览器测试使用 `planner/test-helpers.js` 创建独立 Chrome 和模拟服务；后端公共夹具隔离运行目录和生产入口。不要用真实 WMS 任务来验证纯注释或页面样式修改。

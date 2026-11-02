@@ -175,7 +175,7 @@ function verifyExport(a, selection, label) {
     check(v('多件') === ch.multiCount, `${label} 渠道统计 ${ch.id} 多件`);
     check(v('混件') === ch.mixCount, `${label} 渠道统计 ${ch.id} 混件`);
     check(v('爆品线') === ch.params.hotLine, `${label} 渠道统计 ${ch.id} 爆品线`);
-    check(v('波次容量') === ch.params.capacity, `${label} 渠道统计 ${ch.id} 波次容量`);
+    check(v('爆品容量') === ch.params.capacity, `${label} 渠道统计 ${ch.id} 爆品容量`);
     check(v('多件分段数') === ch.params.multiSegs, `${label} 渠道统计 ${ch.id} 多件分段数`);
     check(v('混件分段数') === ch.params.mixSegs, `${label} 渠道统计 ${ch.id} 混件分段数`);
     check(v('混件吸收') === ch.params.absorb + '-' + ABSORB_LABELS[ch.params.absorb], `${label} 渠道统计 ${ch.id} 混件吸收`);

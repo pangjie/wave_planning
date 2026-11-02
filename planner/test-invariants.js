@@ -118,12 +118,12 @@ T.withChrome({}, async chrome => {
   })()`);
 
   /* 不变量 3：合并模式（渠道归并为 CBT/CBS/普通） */
-  await evalJs(`document.getElementById('modeLabel').click()`);
+  await evalJs(`document.getElementById('headerModeToggle').click()`);
   await poll(`window.__dshTest.state.merged`, true, 100, 50);
   await checkAllocation('合并模式全部渠道+分段');
   const mergedChans = await evalJs(`window.__dshTest.curAnalysis().channels.map(function(c){return c.id;}).join(',')`);
   console.log('✔ 合并模式渠道:', mergedChans);
-  await evalJs(`document.getElementById('modeLabel').click()`);  // 切回拆分模式
+  await evalJs(`document.getElementById('headerModeToggle').click()`);  // 切回拆分模式
   await poll(`window.__dshTest.state.merged`, false, 100, 50);
 
   /* 加固验证：多行订单合并 + 未识别类型不丢单 + 参数调整清空波次历史 */

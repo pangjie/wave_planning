@@ -19,8 +19,8 @@ T.withChrome({}, async chrome => {
 
   /* 显式切到“降序”再切回“固定”，避免只验证初始默认值。 */
   await evalJs(`(function(){
-    document.getElementById('sortModeLabel').click();
-    document.getElementById('sortModeLabel').click();
+    document.getElementById('headerSortToggle').click();
+    document.getElementById('headerSortToggle').click();
     return true;
   })()`);
 
@@ -51,8 +51,8 @@ T.withChrome({}, async chrome => {
     };
 
     return JSON.stringify({
-      mode: document.getElementById('modeLabel').textContent.trim(),
-      sort: document.getElementById('sortModeLabel').textContent.trim(),
+      mode: document.getElementById('headerModeToggle').textContent.trim(),
+      sort: document.getElementById('headerSortToggle').textContent.trim(),
       order: order,
       scrollTop: wrap.scrollTop,
       headDelta: Math.abs(after.head - before.head),
@@ -68,7 +68,7 @@ T.withChrome({}, async chrome => {
     'CBT', 'USPS', 'SwiftX', 'UPS', 'Fedex', 'SpeedX',
     'Gofo', 'CBS', 'BFE', 'UniUni', 'YanWen', '未识别'
   ];
-  T.assert(result.mode === '拆分' && result.sort === '固定',
+  T.assert(result.mode.indexOf('拆分') >= 0 && result.sort.indexOf('固定') >= 0,
     '测试必须位于“拆分 / 固定”模式: ' + JSON.stringify(result));
   T.assert(JSON.stringify(result.order) === JSON.stringify(expected),
     '固定渠道顺序不符合要求: ' + JSON.stringify(result.order));

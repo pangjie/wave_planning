@@ -3,11 +3,13 @@
 # 输出：本工程顶层的 波次规划工具.html，
 #       并同步部署到 ../wms/project/frontend/dist/index.html（本地服务控制台页面）
 import os
+import shutil
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(BASE)
 OUT = os.path.join(ROOT, "波次规划工具.html")
 WMS_DIST = os.path.join(ROOT, "wms", "project", "frontend", "dist")
+LOCAL_LOCATIONS = os.path.join(BASE, "location-priority.local.json")
 
 head = open(os.path.join(BASE, "part0-head.html"), encoding="utf-8").read()
 body = open(os.path.join(BASE, "part1-body.html"), encoding="utf-8").read()
@@ -36,6 +38,14 @@ if os.path.isdir(WMS_DIST):
     with open(os.path.join(WMS_DIST, "index.html"), "w", encoding="utf-8") as f:
         f.write(html)
     print(f"deployed {os.path.join(WMS_DIST, 'index.html')}")
+    # 库位表是内部数据，不嵌入 HTML；只作为同源静态文件放在 dist 供页面 fetch。
+    dist_locations = os.path.join(WMS_DIST, "location-priority.json")
+    if os.path.isfile(LOCAL_LOCATIONS):
+        shutil.copyfile(LOCAL_LOCATIONS, dist_locations)
+        print(f"copied local location table -> {dist_locations}")
+    elif os.path.exists(dist_locations):
+        os.remove(dist_locations)
+        print(f"removed stale location table: {dist_locations}")
 else:
     print(f"(WMS frontend/dist 不存在，跳过部署：{WMS_DIST})")
 

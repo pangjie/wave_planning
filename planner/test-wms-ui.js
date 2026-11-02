@@ -23,10 +23,15 @@ const mock = createMockServer({ samplePath: SAMPLE, htmlSource: HTML_SOURCE });
   const jobStatus = id => `(function(){var j=window.__dshTest.wms.job;return j && j.id === ${JSON.stringify(id)} ? j.status : '';})()`;
   async function startJob(mode) {
     const oldIds = [...mock.jobs.keys()];
+    // 先完成模式切换再点运行；否则同一 eval 内按钮可能仍处在旧模式的禁用状态。
     await evalJs(`(function(){
       if (window.__dshTest.wms.mode !== ${JSON.stringify(mode)}) document.getElementById(${JSON.stringify(buttons[mode])}).click();
-      document.getElementById('wmsRun').click();
+      return 1;
     })()`);
+    await poll(`window.__dshTest.wms.mode`, mode, 100, 50);
+    const disabled = await evalJs(`document.getElementById('wmsRun').disabled`);
+    assert(disabled === false, '开始任务按钮被禁用: ' + await evalJs(`document.getElementById('wmsRun').title`));
+    await evalJs(`document.getElementById('wmsRun').click()`);
     await poll(`(function(){var j=window.__dshTest.wms.job;return !!(j && j.mode === ${JSON.stringify(mode)} && !${JSON.stringify(oldIds)}.includes(j.id));})()`, true);
     const id = await evalJs(`window.__dshTest.wms.job.id`);
     assert(mock.jobs.has(id) && !oldIds.includes(id), '必须锁定本次模拟服务新建的 job ID');
@@ -45,7 +50,8 @@ const mock = createMockServer({ samplePath: SAMPLE, htmlSource: HTML_SOURCE });
   const init = await evalJs(`(function(){
     return JSON.stringify({
       sideShown: document.getElementById('wmsSection').style.display !== 'none',
-      dotOk: document.getElementById('wmsDot').classList.contains('ok'),
+      dotOk: document.getElementById('wmsExportIndicator').classList.contains('ok'),
+      headGone: !document.querySelector('.side-wms-head') && document.getElementById('wmsSection').textContent.indexOf('WMS 自动化') === -1,
       panelShown: !document.getElementById('wmsPanel').hidden,
       stateTxt: document.getElementById('wmsState').textContent,
       btnsOn: !document.getElementById('wmsExport').disabled && !document.getElementById('wmsGenerate').disabled && !document.getElementById('wmsPrint').disabled && !document.getElementById('wmsPick').disabled,
@@ -54,7 +60,7 @@ const mock = createMockServer({ samplePath: SAMPLE, htmlSource: HTML_SOURCE });
     });
   })()`);
   const ini = JSON.parse(init);
-  assert(ini.sideShown && ini.dotOk && ini.panelShown && ini.stateTxt === '空闲' && ini.btnsOn, '初始状态错误: ' + init);
+  assert(ini.sideShown && ini.dotOk && ini.headGone && ini.panelShown && ini.stateTxt === '空闲' && ini.btnsOn, '初始状态错误: ' + init);
   assert(ini.runOff === true && ini.runText === '开始任务', '未选功能时开始任务应禁用: ' + init);
   assert(await evalJs(`document.getElementById('wmsExport').textContent`) === '全量分析', '按钮应名为「全量分析」');
   await shot('wms-1-idle');
@@ -90,23 +96,23 @@ const mock = createMockServer({ samplePath: SAMPLE, htmlSource: HTML_SOURCE });
   assert(reqs[0].mode === 'export' && reqs[0].confirm_production === true && reqs[0].wave_nos === undefined, '导出请求体错误: ' + JSON.stringify(reqs[0]));
   assert(reqs[0].browser_mode === 'headless', '默认应为无头模式: ' + JSON.stringify(reqs[0]));
   const bm = await evalJs(`(function(){
-    var el = document.getElementById('browserModeVal');
-    return JSON.stringify({ text: el.textContent, headless: window.__dshTest.wms.headless });
+    var el = document.getElementById('brandBrowserToggle');
+    return JSON.stringify({ text: document.getElementById('brandBrowserState').textContent, headless: window.__dshTest.wms.headless, disabled: el.disabled });
   })()`);
   const bmv = JSON.parse(bm);
-  assert(bmv.text === '无头' && bmv.headless === true, '浏览器模式默认应为无头: ' + bm);
-  await evalJs(`document.getElementById('browserModeVal').click()`);
+  assert(bmv.text === '·无头' && bmv.headless === true && bmv.disabled === false, '浏览器模式默认应为无头: ' + bm);
+  await evalJs(`document.getElementById('brandBrowserToggle').click()`);
   await sleep(100);
   const bm2 = JSON.parse(await evalJs(`(function(){
-    return JSON.stringify({ text: document.getElementById('browserModeVal').textContent, headless: window.__dshTest.wms.headless });
+    return JSON.stringify({ text: document.getElementById('brandBrowserState').textContent, headless: window.__dshTest.wms.headless });
   })()`));
-  assert(bm2.text === '有头' && bm2.headless === false, '点击后应切换为有头: ' + JSON.stringify(bm2));
-  await evalJs(`document.getElementById('browserModeVal').click()`);
+  assert(bm2.text === '·有头' && bm2.headless === false, '点击后应切换为有头: ' + JSON.stringify(bm2));
+  await evalJs(`document.getElementById('brandBrowserToggle').click()`);
   await sleep(100);
   const bm3 = JSON.parse(await evalJs(`(function(){
-    return JSON.stringify({ text: document.getElementById('browserModeVal').textContent, headless: window.__dshTest.wms.headless });
+    return JSON.stringify({ text: document.getElementById('brandBrowserState').textContent, headless: window.__dshTest.wms.headless });
   })()`));
-  assert(bm3.text === '无头' && bm3.headless === true, '再次点击应切回无头: ' + JSON.stringify(bm3));
+  assert(bm3.text === '·无头' && bm3.headless === true, '再次点击应切回无头: ' + JSON.stringify(bm3));
   console.log('✔ 浏览器模式切换：默认无头，点击在有头/无头之间切换');
   await shot('wms-2-exported');
   console.log('✔ 导出订单：任务完成 → 自动导入 5700 单并重建表格；请求含 confirm_production');
@@ -185,6 +191,9 @@ const mock = createMockServer({ samplePath: SAMPLE, htmlSource: HTML_SOURCE });
   console.log('✔ 改变渠道选择产生新计划，不沿用旧计划完成标记');
 
   /* 2.5 生成波次：分段按导出顺序提交（不跳过已完成分段，重新生成由用户勾选决定） */
+  // 单件段池必须低于 WMS 700 单上限；默认 1 段会让大渠道超过上限并前置禁用。
+  await evalJs(`window.__dshTest.setUnifiedParam('paperSegs', 2)`);
+  assert((await evalJs(`window.__dshTest.paperLimitState()`)) === null, '测试准备：单件段不应超过 700');
   const generateJobId = await startJob('generate_waves');
   /* 逐段变绿：任务仍在运行时，已生成的分段即变绿（而非全部完成后才变绿） */
   await poll(`(function(){
@@ -249,13 +258,18 @@ const mock = createMockServer({ samplePath: SAMPLE, htmlSource: HTML_SOURCE });
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ channel: failTarget.channel, seg_name: failTarget.seg_name })
   });
+  const linksBeforePartial = await evalJs(`document.querySelectorAll('#wmsLog a[href*="/api/exports/"]').length`);
   const partialJobId = await startJob('generate_waves');
   assert(partialJobId !== generateJobId, '相同模式必须等待新任务，而非上次已完成的任务');
   await poll(jobStatus(partialJobId), 'partial', 100, 300);
-  await poll(`document.querySelector('#wmsLog a[href*="/api/exports/"]') ? true : false`, true, 100, 100);
+  // 自动导出是终态后的异步保存；等待本任务新增的那一条链接，不能用已有链接代替。
+  await poll(`document.querySelectorAll('#wmsLog a[href*="/api/exports/"]').length > ${linksBeforePartial}`, true, 100, 300);
+  // 事件级日志在“日志详情”面板；简要栏只保留任务汇总卡片。
+  await evalJs(`document.getElementById('btnLogDetails').click()`);
+  await poll(`document.getElementById('logDetailsContent').textContent.indexOf('${failTarget.seg_name}')>=0`, true, 100, 100);
   const partInfo = JSON.parse(await evalJs(`(function(){
     var seg = document.querySelector('.seg-line[data-seg="${failTarget.channel}|${failTarget.seg_name}"]');
-    var logText = document.getElementById('wmsLog').textContent;
+    var logText = document.getElementById('logDetailsContent').textContent;
     return JSON.stringify({
       waved: window.__dshTest.state.waveNos.size,
       failedWaved: !!(seg && seg.classList.contains('waved')),
@@ -265,7 +279,8 @@ const mock = createMockServer({ samplePath: SAMPLE, htmlSource: HTML_SOURCE });
   })()`));
   assert(partInfo.failedWaved === false, '失败分段不应变绿: ' + JSON.stringify(partInfo));
   assert(partInfo.waved > 0 && partInfo.failedLogged === true, '其余分段应继续生成且日志含失败记录: ' + JSON.stringify(partInfo));
-  assert(partInfo.linkCount === 1, 'partial 完成后也应自动导出一次: ' + JSON.stringify(partInfo));
+  assert(partInfo.linkCount === linksBeforePartial + 1, 'partial 完成后也应自动导出一次: ' + JSON.stringify(partInfo) + ' before=' + linksBeforePartial);
+  await evalJs(`document.getElementById('btnLogDetails').click()`);
   await fetch(SITE + '/api/__test/fail-segment', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ channel: null, seg_name: null })
@@ -301,7 +316,7 @@ const mock = createMockServer({ samplePath: SAMPLE, htmlSource: HTML_SOURCE });
     return 1;
   })()`);
   await sleep(300);
-  const badMsg = await evalJs(`document.getElementById('status').textContent`);
+  const badMsg = await evalJs(`document.getElementById('wmsLog').textContent`);
   assert(badMsg.indexOf('波次号格式异常') !== -1 && badMsg.indexOf('BAD#1') !== -1, '非法波次号应被拦截: ' + badMsg);
   const stillIdle = await evalJs(`(function(){
     return JSON.stringify({ text: document.getElementById('wmsRun').textContent, on: !document.getElementById('wmsRun').disabled });
@@ -318,8 +333,8 @@ const mock = createMockServer({ samplePath: SAMPLE, htmlSource: HTML_SOURCE });
   const pr = JSON.parse(await (await fetch(SITE + '/api/__test/requests')).text());
   const printReq = pr.filter(r => r.mode === 'print_waves').pop();
   assert(printReq && JSON.stringify(printReq.wave_nos) === JSON.stringify(['W001', 'W002']), '打印请求波次号应去重: ' + JSON.stringify(printReq));
-  const pmsg = await evalJs(`document.getElementById('wmsMsg').textContent`);
-  assert(pmsg.indexOf('Paper合并') !== -1, '打印完成消息错误: ' + pmsg);
+  // 前端 1 秒轮询后才挂载合并文档链接；状态栏只显示模式名，结果在链接文本中。
+  await poll(`(function(){var a=document.querySelector('#wmsLog a[href*="/merged"]');return !!(a && a.textContent.indexOf('Paper合并')>=0);})()`, true, 100, 100);
   const linkInfo = await evalJs(`(function(){
     var a = document.querySelector('#wmsLog a[href*="/merged"]');
     return JSON.stringify({
@@ -372,7 +387,7 @@ const mock = createMockServer({ samplePath: SAMPLE, htmlSource: HTML_SOURCE });
     return 1;
   })()`);
   await sleep(300);
-  const conflictMsg = await evalJs(`document.getElementById('status').textContent`);
+  const conflictMsg = await evalJs(`document.getElementById('wmsLog').textContent`);
   assert(conflictMsg.indexOf('已有任务在执行') !== -1, '409 冲突应提示: ' + conflictMsg);
   const pickReq = JSON.parse(await (await fetch(SITE + '/api/__test/requests')).text()).filter(r => r.mode === 'pick_waves').pop();
   assert(pickReq && Array.isArray(pickReq.wave_nos) && pickReq.wave_nos.length === 0, '拣货请求应允许空波次列表: ' + JSON.stringify(pickReq));
@@ -388,8 +403,9 @@ const mock = createMockServer({ samplePath: SAMPLE, htmlSource: HTML_SOURCE });
   })()`);
   const ac = JSON.parse(afterCancel);
   assert(ac.state === '已取消' && ac.exportOn === true, '取消后状态错误: ' + afterCancel);
-  assert(ac.runText === '开始任务' && ac.runOn === true, '取消后运行按钮应恢复开始任务且可用: ' + afterCancel);
-  console.log('✔ 批量拣货：运行中锁定模式按钮、409 冲突提示、取消任务后恢复开始任务');
+  assert(ac.runText === '开始任务' && ac.runOn === false, '取消后应清空模式并禁用开始任务: ' + afterCancel);
+  assert(await evalJs(`document.querySelectorAll('.side-wms .wms-mode.sel').length`) === 0, '取消后不应保留任务模式');
+  console.log('✔ 批量拣货：运行中锁定模式按钮、409 冲突提示、取消后清空模式并禁用开始任务');
 
   /* 5. 日志显示：位于操作栏内、常显、宽度=操作栏宽、自动滚动 */
   const logInfo = await evalJs(`(function(){

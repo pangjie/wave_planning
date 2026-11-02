@@ -1,0 +1,66 @@
+#!/bin/bash
+# 服务日常管理：status / start / stop / restart / logs。
+# 与 wms/project/scripts/start.sh 的区别：本脚本管理 launchd 前台守护的实例，
+# 不写 data/service-8000.pid；不要同时用两种方式启动同一端口。
+set -euo pipefail
+
+DEPLOY_ROOT="${WAVE_DEPLOY_ROOT:-$HOME/Library/Application Support/WavePlanning}"
+LABEL="com.jp.waveplanning"
+DOMAIN="gui/$(id -u)"
+DEST="$HOME/Library/LaunchAgents/$LABEL.plist"
+OUT="$DEPLOY_ROOT/wms/project/logs/launchd.out.log"
+ERR="$DEPLOY_ROOT/wms/project/logs/launchd.err.log"
+HOST="${WMS_HOST:-127.0.0.1}"
+PORT="${WMS_PORT:-8000}"
+URL="http://$HOST:$PORT"
+
+loaded() { launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1; }
+healthy() { curl -fsS --max-time 2 "$URL/api/health" >/dev/null 2>&1; }
+
+wait_healthy() {
+  for _ in {1..40}; do
+    healthy && { echo "健康检查通过：$URL/"; return 0; }
+    sleep 0.5
+  done
+  echo "健康检查失败，请查看 $ERR" >&2
+  return 1
+}
+
+case "${1:-status}" in
+  status)
+    if loaded; then
+      echo "launchd：已加载（${DOMAIN}/${LABEL}）"
+      launchctl print "$DOMAIN/$LABEL" 2>/dev/null | awk -F'= ' '/^\tpid = /{print "进程 PID：" $2}'
+    else
+      echo "launchd：未加载"
+    fi
+    if healthy; then echo "HTTP：$URL/api/health -> ok"; else echo "HTTP：健康检查失败"; fi
+    ;;
+  start)
+    loaded || launchctl bootstrap "$DOMAIN" "$DEST"
+    launchctl kickstart "$DOMAIN/$LABEL"
+    wait_healthy
+    ;;
+  stop)
+    if loaded; then
+      launchctl bootout "$DOMAIN/$LABEL"
+      echo "已停止并从 launchd 卸载；下次登录仍会自启（plist 保留）。"
+    else
+      echo "服务未加载。"
+    fi
+    ;;
+  restart)
+    loaded || launchctl bootstrap "$DOMAIN" "$DEST"
+    # -k 先发送 SIGTERM 等待优雅清理，再启动新进程；后台任务会被中断并标记。
+    launchctl kickstart -k "$DOMAIN/$LABEL"
+    wait_healthy
+    ;;
+  logs)
+    echo "== $OUT =="; tail -n 60 "$OUT" 2>/dev/null || true
+    echo "== $ERR =="; tail -n 60 "$ERR" 2>/dev/null || true
+    ;;
+  *)
+    echo "用法：$0 [status|start|stop|restart|logs]" >&2
+    exit 2
+    ;;
+esac

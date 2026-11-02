@@ -46,22 +46,28 @@ T.withChrome({}, async chrome => {
       sideExists: !!document.querySelector('.side'),
       btnInHeader: !!(document.getElementById('btnImport') && document.getElementById('btnImport').closest('.header-actions')),
       fileRowGone: !document.getElementById('fileLabel'),
-      modeInSide: !!(document.getElementById('modeLabel') && document.getElementById('modeLabel').closest('.side')),
+      modeInHeader: !!(document.getElementById('headerModeToggle') && document.getElementById('headerModeToggle').closest('#dash thead')),
+      sortInHeader: !!(document.getElementById('headerSortToggle') && document.getElementById('headerSortToggle').closest('#dash thead')),
+      brandToggle: !!(document.getElementById('brandBrowserToggle') && document.getElementById('brandBrowserToggle').closest('.brand')),
+      settingsGone: !document.getElementById('modeLabel') && !document.getElementById('sortModeLabel') && !document.getElementById('browserModeVal') && !document.querySelector('.side-intro'),
+      masterCount: document.querySelectorAll('#dash [data-master="ch"]').length,
       wmsGenBtn: !!document.getElementById('wmsGenerate'),
       sideW: Math.round(document.querySelector('.side').getBoundingClientRect().width),
       wmsHidden: document.getElementById('wmsSection').style.display === 'none' && document.getElementById('wmsPanel').hidden,
+      wmsBorder: getComputedStyle(document.getElementById('wmsSection')).borderTopWidth,
       bodyBg: getComputedStyle(document.body).backgroundColor,
       hasButtons: !!document.getElementById('btnImport') && !!document.getElementById('btnExport'),
       noHint: document.getElementById('dash').textContent.indexOf('勾选语义') === -1,
       unifiedLabel: document.querySelector('#dash .urowe td:first-child').textContent,
       unifiedAlign: getComputedStyle(document.querySelector('#dash .urowe td:first-child')).textAlign,
       shellMaxW: getComputedStyle(document.querySelector('.shell')).maxWidth,
-      modeLabel: document.getElementById('modeLabel').textContent,
-      modeToggle: document.getElementById('modeLabel').className.indexOf('mode-toggle') !== -1,
+      modeText: (document.getElementById('headerModeToggle') || {textContent: ''}).textContent,
+      modeClass: (document.getElementById('headerModeToggle') || {className: ''}).className,
+      sortText: (document.getElementById('headerSortToggle') || {textContent: ''}).textContent,
+      brandText: (document.getElementById('brandBrowserToggle') || {textContent: ''}).textContent,
       statsLines: document.querySelectorAll('#dash .statsline').length,
       noDupStats: document.getElementById('dash').textContent.indexOf('单品单件') === -1,
-      engineHidden: document.getElementById('engineLabelWrap').style.display === 'none',
-      engineText: document.getElementById('engineLabel').textContent
+      footerGone: !document.querySelector('.side-status') && !document.getElementById('status')
     });
   })()`);
   const em = JSON.parse(empty);
@@ -71,24 +77,43 @@ T.withChrome({}, async chrome => {
   assert(em.themeOptions === 5 && em.themeDefault === '光耀紫府', '主题应为 5 个选项且默认光耀紫府: ' + JSON.stringify({n: em.themeOptions, d: em.themeDefault}));
   assert(em.themeAttr === 'dracula', '默认主题属性应为 dracula: ' + em.themeAttr);
   assert(em.fontGone === true, '字体选择功能应已移除（字体固定 Sarasa Mono SC）');
-  assert(em.sideExists === true && em.btnInHeader === true && em.fileRowGone === true && em.modeInSide === true,
-    '导入应在右上角，渠道模式在侧栏，旧导入模块已移除: ' + JSON.stringify(em));
+  assert(em.sideExists === true && em.btnInHeader === true && em.fileRowGone === true,
+    '导入应在右上角，旧导入模块已移除: ' + JSON.stringify(em));
+  assert(em.settingsGone === true && em.modeInHeader === true && em.sortInHeader === true && em.brandToggle === true,
+    '规划设置应移除，渠道/排序进入表头，浏览器模式进入标题: ' + JSON.stringify(em));
+  assert(em.masterCount === 1, '渠道全选只应保留表头方块，不能与模式按钮共用: ' + em.masterCount);
   assert(em.themeBtnInBtns && em.themeBtnText === '主题' && em.themeIconOnly, '主题按钮应在右上角，以图标显示并保留可访问文本');
   assert(em.wmsGenBtn === true, '操作栏应存在生成波次按钮');
   assert(em.sideW === 250, '1920px 视口操作栏宽度应为 250px: ' + em.sideW);
   assert(em.wmsHidden === true, 'file:// 打开时 WMS 联动区应隐藏（离线纯规划模式）');
+  assert(em.wmsBorder === '0px', '移除规划设置后 WMS 区不应残留分隔线: ' + em.wmsBorder);
   assert(em.bodyBg === 'rgb(28, 23, 48)', '默认主题应为光耀紫府的提亮底色: ' + em.bodyBg);
   assert(em.statsLines === 0, '表格上方统计条应已移除');
   assert(em.noHint === true, '底部勾选语义说明未移除');
   assert(em.unifiedLabel === '统一调整' && em.unifiedAlign === 'center', '统一行标签应为「统一调整」且水平居中: ' + JSON.stringify({l: em.unifiedLabel, a: em.unifiedAlign}));
   assert(em.shellMaxW === '1640px', '页面最大宽度应为 1640px: ' + em.shellMaxW);
   assert(await evalJs(`!document.getElementById('countLabel')`) === true, '顶栏不应再有订单统计');
-  assert(em.modeLabel === '拆分' && em.modeToggle === true, '渠道模式应显示「拆分」且可点击: ' + em.modeLabel);
+  assert(em.modeText.indexOf('渠道·拆分') >= 0 && em.modeClass.indexOf('header-toggle') >= 0, '渠道模式应显示「渠道·拆分」且可点击: ' + em.modeText);
+  assert(em.sortText.indexOf('激活·固定') >= 0, '排序应显示「激活·固定」: ' + em.sortText);
+  assert(em.brandText.indexOf('波次规划工具·无头') >= 0, '标题应显示「波次规划工具·无头」: ' + em.brandText);
   assert(em.statsLines === 0 && em.noDupStats === true, '表格上方不应再有重复统计');
-  assert(em.engineHidden === true && em.engineText === '', '引擎正常时不应显示引擎状态: ' + JSON.stringify({h: em.engineHidden, t: em.engineText}));
-  console.log('✔ 空状态：表格骨架、统一调整居中、1640px 布局，右上角导入/导出/主题图标');
+  assert(em.footerGone === true, '底部状态区与隐藏状态节点应移除');
+  console.log('✔ 空状态：表格骨架、统一调整居中、1640px 布局，右上角导入/导出/主题图标，规划设置已移除');
 
-  /* 2. 导入 */
+  /* 2. 标题点击切换浏览器模式；任务中锁定模式/浏览器按钮 */
+  await evalJs(`document.getElementById('brandBrowserToggle').click()`);
+  const brandHeaded = await evalJs(`JSON.stringify({text:document.getElementById('brandBrowserState').textContent,headless:window.__dshTest.wms.headless,disabled:document.getElementById('brandBrowserToggle').disabled})`);
+  assert(JSON.parse(brandHeaded).text === '·有头' && JSON.parse(brandHeaded).headless === false, '标题应切换到有头: ' + brandHeaded);
+  await evalJs(`document.getElementById('brandBrowserToggle').click()`);
+  const brandHeadless = await evalJs(`JSON.stringify({text:document.getElementById('brandBrowserState').textContent,headless:window.__dshTest.wms.headless})`);
+  assert(JSON.parse(brandHeadless).text === '·无头' && JSON.parse(brandHeadless).headless === true, '标题应切回无头: ' + brandHeadless);
+  const locked = await evalJs(`(function(){window.__dshTest.wms.active=true;window.__dshTest.wmsUpdateRunButton();return JSON.stringify({mode:document.getElementById('headerModeToggle').disabled,brand:document.getElementById('brandBrowserToggle').disabled});})()`);
+  assert(JSON.parse(locked).mode === true && JSON.parse(locked).brand === true, '任务运行中应锁定渠道模式/浏览器模式: ' + locked);
+  await evalJs(`(function(){window.__dshTest.wms.active=false;window.__dshTest.wmsUpdateRunButton();return 1;})()`);
+  const unlocked = await evalJs(`JSON.stringify({mode:document.getElementById('headerModeToggle').disabled,brand:document.getElementById('brandBrowserToggle').disabled})`);
+  assert(JSON.parse(unlocked).mode === false && JSON.parse(unlocked).brand === false, '任务结束后应恢复模式/浏览器按钮: ' + unlocked);
+
+  /* 3. 导入 */
   await evalJs(T.importFileExpr(SAMPLE));
   await poll(`window.__dshTest.state.records.length`, 5700);
   assert(await evalJs(`document.querySelector('#dash .urowe td.num').textContent`) === '5690', '初次导入应排除默认关闭的 10 单未识别订单');
@@ -96,9 +121,10 @@ T.withChrome({}, async chrome => {
   // 以下旧样例精确计数针对全部 5700 单；显式全选，而不是假设默认激活未识别。
   await evalJs(`document.querySelector('#dash [data-master="ch"].tog').click()`);
   // 本节的样例分段数基于 SwiftX 首行，显式使用降序；固定顺序另有独立测试。
-  await evalJs(`document.getElementById('sortModeLabel').click()`);
-  assert(await evalJs(`document.getElementById('sortModeLabel').textContent`) === '降序', '应显式切换到降序');
-  assert(await evalJs(`document.getElementById('status').textContent`) === '', '导入订单后不应显示动作说明');
+  await evalJs(`document.getElementById('headerSortToggle').click()`);
+  assert((await evalJs(`document.getElementById('headerSortToggle').textContent`)).indexOf('·降序') >= 0, '应显式切换到降序');
+  assert(await evalJs(`!document.getElementById('status') && !document.querySelector('.side-status')`), '底部状态区应移除');
+  assert((await evalJs(`document.getElementById('wmsLog').textContent`)).indexOf('已导入') >= 0, '导入批次应写入日志');
   assert(await evalJs(`document.querySelectorAll('#dash .prow').length`) === 12, '渠道行应为 12（含空渠道）');
 
   const struct = await evalJs(`(function(){
@@ -146,7 +172,7 @@ T.withChrome({}, async chrome => {
   assert(sc.wcColor !== sc.ocColor, '波数/单量未着色区分');
   assert(Math.abs(sc.th0w - sc.tableW * .09) < 1, '渠道列应占表格 9%: ' + JSON.stringify(sc));
   assert(sc.midW.every(w => Math.abs(w - sc.tableW * .06) < 1), '六个参数/计数列应各占 6% 且等宽: ' + JSON.stringify(sc.midW));
-  assert(sc.head.includes('爆品容量|爆品|单件|多件|混件'), '参数列顺序错误: ' + sc.head);
+  assert(sc.head.includes('激活·降序|容量|爆品|单件|多件|混件'), '参数列顺序错误: ' + sc.head);
   assert(sc.layout === 'fixed', '表格未使用固定布局');
   assert(sc.headHasCount === false, '表头类型列不应再显示波/单统计');
   assert(sc.urowCountTxt.indexOf('波') !== -1 && sc.urowCountTxt.split('|').length === 4, '波/单统计应在统一行类型列: ' + sc.urowCountTxt);
@@ -194,7 +220,7 @@ T.withChrome({}, async chrome => {
   assert(tg.equalWidth === true, '渠道标签应等宽: ' + JSON.stringify(tg.widths));
   assert(tg.backgroundImage.includes('linear-gradient') && tg.color !== 'rgb(0, 0, 0)', '渠道标签应为渐变底与明亮渠道色文字: ' + JSON.stringify(tg));
   assert(tg.markerWidth === 6 && tg.radius === 9 && tg.markerColor !== 'rgba(0, 0, 0, 0)', '渠道标签应有圆角和彩色标记点: ' + JSON.stringify(tg));
-  assert(tg.padTop === 20 && tg.vAlign === 'top', '渠道参数格应顶部对齐并留 20px 上边距: ' + JSON.stringify(tg));
+  assert(tg.padTop === 16 && tg.vAlign === 'top', '渠道参数格应顶部对齐并留 16px 上边距: ' + JSON.stringify(tg));
   assert(tg.tagClearance >= 8, '渠道标签不应溢出单元格: ' + JSON.stringify(tg));
   console.log('✔ 渠道标签：等宽圆角渐变、标记点和明亮文字，标签不溢出单元格');
 
@@ -257,11 +283,23 @@ T.withChrome({}, async chrome => {
     var el2 = document.querySelector('#dash .seg-line[data-seg="' + CSS.escape(key) + '"]');
     var paperMaster = document.querySelector('#dash [data-master="t:paper"].tog');
     var cnt = document.querySelector('#dash .type-count[data-t="paper"]').textContent;
+    // 期望值按当前选择从分析结果重算，避免把某次分段算法的数字写死。
+    var modeKey = window.__dshTest.state.merged ? 'merged' : 'normal';
+    var sel = window.__dshTest.state.modes[modeKey].sel;
+    var analysis = window.__dshTest.getAnalysis(modeKey);
+    var expectedWaves = 0, expectedOrders = 0;
+    analysis.channels.forEach(function(ch){
+      var chOn = sel.channels.has(ch.id);
+      ch.byType.paper.forEach(function(s){
+        if (chOn && sel.segs.has(ch.id + '|' + s.name)) { expectedWaves++; expectedOrders += s.orderCount; }
+      });
+    });
     return JSON.stringify({
       same: JSON.stringify(before) === JSON.stringify(after),
       clsFlipped: clsBefore !== el2.className,
       paperMaster: {text: paperMaster.textContent, some: paperMaster.classList.contains('some')},
       count: cnt,
+      expected: expectedWaves + '波/' + expectedOrders + '单',
       selectedTotal: document.querySelector('#dash .urowe td.num').textContent
     });
   })()`);
@@ -269,8 +307,8 @@ T.withChrome({}, async chrome => {
   assert(st.same === true, '勾选分段导致布局变化');
   assert(st.clsFlipped === true, '分段行状态类未更新');
   assert(st.paperMaster.text === '[~]' && st.paperMaster.some === true, '类型全选框应为绿～');
-  assert(st.count === '16波/2949单', '类型统计未按绿X更新: ' + st.count);
-  console.log('✔ 结构稳定；取消 CBT 单件paper 后类型框=绿～，统计 16波/2949单（着色子元素就地更新）');
+  assert(st.count === st.expected, '类型统计未按绿X更新: ' + st.count + ' ≠ ' + st.expected);
+  console.log('✔ 结构稳定；取消 CBT 单件paper 后类型框=绿～，统计 ' + st.count + '（按选择重算一致）');
 
   /* 4. 类型全选三态 */
   async function hotMaster() {
@@ -320,11 +358,11 @@ T.withChrome({}, async chrome => {
   console.log('✔ 渠道优先：全选框绿X/绿～/全选全不选；关闭渠道→分段全灰；恢复后回绿X');
 
   /* 6. 渠道模式切换（顶栏）：拆分 / 归并 */
-  await evalJs(`(function(){document.getElementById('modeLabel').click();return 1;})()`);
+  await evalJs(`(function(){document.getElementById('headerModeToggle').click();return 1;})()`);
   await poll(`window.__dshTest.state.merged`, true);
   assert(await evalJs(`document.querySelectorAll('#dash .prow').length`) === 3, '归并后应 3 行（CBT/CBS/普通）');
-  assert(await evalJs(`document.getElementById('modeLabel').textContent`) === '归并', '渠道模式标签未更新');
-  assert(await evalJs(`document.getElementById('modeLabel').className.indexOf('on') !== -1`) === true, '归并模式标签未高亮');
+  assert((await evalJs(`document.getElementById('headerModeToggle').textContent`)).indexOf('·归并') >= 0, '渠道模式标签未更新');
+  assert(await evalJs(`document.getElementById('headerModeToggle').getAttribute('aria-pressed')`) === 'true', '归并模式标签未标记');
   const mergedSel = await evalJs(`(function(){
     var m = window.__dshTest.state.modes.merged.sel;
     var a = window.__dshTest.getAnalysis('merged');
@@ -338,11 +376,11 @@ T.withChrome({}, async chrome => {
   })()`);
   const ms2 = JSON.parse(mergedSel);
   assert(ms2.ids === '普通,CBT,CBS' && ms2.allCh === true && ms2.allSeg === true && ms2.segOn === true, '归并后默认渠道/分段未全选: ' + JSON.stringify(ms2));
-  await evalJs(`(function(){document.getElementById('modeLabel').click();return 1;})()`);
+  await evalJs(`(function(){document.getElementById('headerModeToggle').click();return 1;})()`);
   await poll(`window.__dshTest.state.merged`, false);
-  assert(await evalJs(`document.getElementById('modeLabel').textContent`) === '拆分', '渠道模式标签未还原');
+  assert((await evalJs(`document.getElementById('headerModeToggle').textContent`)).indexOf('·拆分') >= 0, '渠道模式标签未还原');
   assert(await evalJs(`document.querySelectorAll('#dash .prow').length`) === 12, '拆分后应 12 行（含空渠道）');
-  console.log('✔ 渠道模式切换：顶栏点击 拆分⇄归并，归并默认全选，拆分还原全部渠道');
+  console.log('✔ 渠道模式切换：表头点击 拆分⇄归并，归并默认全选，拆分还原全部渠道');
 
   /* 7. 数字步进与吸收循环 */
   async function clickSel(sel) { return await evalJs(`(function(){var el=document.querySelector('${sel}');if(!el)return false;el.click();return true;})()`); }
@@ -470,8 +508,6 @@ T.withChrome({}, async chrome => {
   /* 8. 导出（状态 + 页面内缓冲区验证；真实下载到盘由 web-chain 覆盖） */
   await evalJs(`document.getElementById('btnExport').click()`);
   await sleep(400);
-  const expStatus = await evalJs(`document.getElementById('status').textContent`);
-  assert(expStatus.indexOf('已导出') === 0, '导出状态错误: ' + expStatus);
   const b64buf = await evalJs(`window.__dshTest.buildExportBuffer()`);
   assert(typeof b64buf === 'string' && b64buf.length > 100000, '导出缓冲区异常: ' + (b64buf ? b64buf.length : 'null'));
   fs.writeFileSync(P.tmp('e2e-export-click.xlsx'), Buffer.from(b64buf, 'base64'));
@@ -481,8 +517,7 @@ T.withChrome({}, async chrome => {
   })()`);
   await evalJs(`document.getElementById('btnExport').click()`);
   await sleep(300);
-  const stMsg = await evalJs(`document.getElementById('status').textContent`);
-  assert(stMsg.indexOf('没有可导出的分段') === 0, '空选导出未阻止: ' + stMsg);
+  assert((await evalJs(`document.getElementById('wmsLog').textContent`)).indexOf('没有可导出的分段') >= 0, '空选导出提示必须写入日志');
   await evalJs(`(function(){document.querySelector('#dash [data-master="ch"].tog').click();return 1;})()`);
   console.log('✔ 导出成功 + 全渠道关闭阻止导出');
 

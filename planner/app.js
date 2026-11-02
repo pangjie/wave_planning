@@ -38,6 +38,9 @@
   }
   var uspsSplitDefault = true;
   try { uspsSplitDefault = localStorage.getItem('wave-usps-split') !== 'off'; } catch (e) { }
+  var PAPER_SEGMENT_LIMIT = 700; // WMS 多项搜索单次上限，站点强制设定
+  var paperStrategyRequested = 'sku';
+  try { paperStrategyRequested = localStorage.getItem('wave-paper-strategy') === 'location' ? 'location' : 'sku'; } catch (e) { }
   var state = {
     uspsSplit: uspsSplitDefault,
     waveNos: new Map(),  // 分段键(chId|segName) -> 波次号（生成波次后回填）
@@ -45,6 +48,11 @@
     qtyMap: {},
     merged: false,
     ordinaryEvolved: false,
+    paperStrategy: 'sku',
+    locationData: null,
+    locationReady: false,
+    locationError: null,
+    lastPaperWarningSig: null,
     modes: { normal: makeModeState(), merged: makeModeState() },
     analysis: { normal: null, merged: null, ordinary: null }
   };
@@ -60,6 +68,8 @@
     if (!state.batchId) state.batchId = newPlanId();
     var m = ms();
     var signature = JSON.stringify([state.batchId, state.merged, state.ordinaryEvolved, state.uspsSplit,
+      state.paperStrategy,
+      state.paperStrategy === 'location' && state.locationData ? state.locationData.version : null,
       m.unified, Array.from(m.per), m.order, Array.from(m.sel.channels).sort(), Array.from(m.sel.segs).sort()]);
     if (state.planSignature !== signature) {
       state.planSignature = signature;
@@ -99,7 +109,8 @@
     // 若顺序颠倒，新分段会暂时被当成关闭，造成普通数量直到下一次点击才恢复。
     key = key === 'merged' ? 'merged' : 'normal';
     if (!state.analysis[key]) {
-      state.analysis[key] = analyze(state.records, state.qtyMap, key, paramsResolver(key), state.uspsSplit);
+      state.analysis[key] = analyze(state.records, state.qtyMap, key, paramsResolver(key), state.uspsSplit,
+        state.paperStrategy, state.locationData);
     }
     if (key === 'normal' && state.ordinaryEvolved) {
       if (!state.analysis.ordinary) {
@@ -109,7 +120,8 @@
         syncSelection(state.analysis.normal, normalMode);
         state.analysis.ordinary = buildOrdinaryEvolvedAnalysis(
           state.analysis.normal, state.records, state.qtyMap, paramsResolver('normal'),
-          normalMode.sel.channels, normalMode.sel.segs
+          normalMode.sel.channels, normalMode.sel.segs,
+          state.paperStrategy, state.locationData
         );
       }
       return state.analysis.ordinary;
@@ -122,6 +134,88 @@
     if (key === 'normal') state.analysis.ordinary = null;
   }
   function invalidateOrdinary() { state.analysis.ordinary = null; }
+
+  /* ---------- 单件库位优先：本地库位表 ---------- */
+  function hasPaperLocationData() {
+    return state.records.some(function (r) {
+      return r.type === '单品单件' && r.skuLocations && r.skuLocations.size > 0;
+    });
+  }
+  function applyLocationData(data) {
+    if (!data || typeof data.version !== 'string' || !data.priority || typeof data.priority !== 'object') {
+      throw new Error('库位表格式无效');
+    }
+    state.locationData = {
+      version: data.version,
+      source: data.source || '',
+      count: data.count || 0,
+      priority: data.priority,
+      nonPicking: Array.isArray(data.nonPicking) ? data.nonPicking : []
+    };
+    state.locationReady = true;
+    state.locationError = null;
+    var wantLocation = paperStrategyRequested === 'location';
+    if (wantLocation && (!state.records.length || hasPaperLocationData())) {
+      state.paperStrategy = 'location';
+    } else {
+      state.paperStrategy = 'sku';
+      if (wantLocation) status('库位表已加载，但当前订单文件不含推荐拣货库位，已使用 SKU 均衡。', 'warn');
+    }
+    invalidate('normal'); invalidate('merged');
+    render();
+    if (state.paperStrategy === 'location') status('库位表已加载，已使用库位优先策略。', 'ok');
+  }
+  function loadLocationTable() {
+    // 库位表是内部数据：同源 fetch 本地 JSON，不嵌入 HTML、不写 localStorage。
+    if (typeof window !== 'undefined' && window.LOCATION_PRIORITY_DATA) {
+      try { applyLocationData(window.LOCATION_PRIORITY_DATA); } catch (e) {
+        state.locationError = e.message;
+        render();
+      }
+      return;
+    }
+    if (typeof location === 'undefined' || typeof fetch !== 'function' ||
+        location.protocol === 'file:') {
+      state.locationError = '离线单文件不支持库位优先';
+      render();
+      return;
+    }
+    fetch('location-priority.json', { cache: 'no-store' }).then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    }).then(function (data) {
+      applyLocationData(data);
+    }).catch(function (e) {
+      state.locationReady = false;
+      state.locationData = null;
+      state.locationError = e.message;
+      if (state.paperStrategy === 'location') state.paperStrategy = 'sku';
+      invalidate('normal'); invalidate('merged');
+      render();
+      status('库位表未加载，库位优先不可用：' + e.message, 'warn');
+    });
+  }
+  function setPaperStrategy(next) {
+    next = next === 'location' ? 'location' : 'sku';
+    if (next === state.paperStrategy) return;
+    if (next === 'location') {
+      if (!state.locationReady) { status('库位表未加载，不能使用库位优先。', 'err'); return; }
+      if (state.records.length && !hasPaperLocationData()) {
+        status('当前订单文件不含推荐拣货库位，不能使用库位优先。', 'err');
+        return;
+      }
+    }
+    var oldOrdinary = state.ordinaryEvolved
+      ? curAnalysis().channels.filter(function (c) { return c.id === '普通'; })[0]
+      : null;
+    wmsClearWaveHistory();
+    state.paperStrategy = next;
+    try { localStorage.setItem('wave-paper-strategy', next); } catch (e) { }
+    invalidate('normal'); invalidate('merged');
+    resetPaperSelection(null, oldOrdinary);
+    render();
+    status(next === 'location' ? '单件已切换为库位优先。' : '单件已切换为 SKU 均衡。', 'ok');
+  }
 
   /* ---------- 渠道顺序 ---------- */
   function orderedChannels(a, orderState) {
@@ -224,14 +318,25 @@
     else setUnified('absorb', next);
   }
 
-  /* ---------- 状态条（替代操作日志） ---------- */
+  /* ---------- 操作提示：只写日志；#status 仅保留隐藏兼容 ---------- */
   var statusTimer = null;
+  var engineErrorLogged = false;
   function status(msg, kind) {
     var el = $('status');
-    el.textContent = msg || '';
-    el.className = 'status' + (kind ? ' ' + kind : '');
+    if (el) {
+      el.textContent = msg || '';
+      el.className = 'status' + (kind ? ' ' + kind : '');
+    }
     clearTimeout(statusTimer);
-    if (msg) statusTimer = setTimeout(function () { el.textContent = ''; el.className = 'status'; }, 5000);
+    if (!msg) return;
+    // 静态成功状态（库位表已加载、策略已切换、已导出等）不再提示、不写日志；
+    // 只有问题/警告进入日志窗口，避免正常状态污染任务记录。
+    if (kind === 'warn' || kind === 'err') {
+      wmsLogLine(msg, kind === 'err' ? 'failed' : 'warn');
+    }
+    statusTimer = setTimeout(function () {
+      if (el) { el.textContent = ''; el.className = 'status'; }
+    }, 5000);
   }
 
   /* ---------- 纯视觉反馈（不参与订单、渠道与分段计算） ---------- */
@@ -330,6 +435,14 @@
         var hm = mapHeaders(loc.rows[0]);
         var br = buildRecords(loc.rows.slice(1), hm);
         if (!br.records.length) throw new Error('「出库单」工作表中没有有效订单数据');
+        if (state.paperStrategy === 'location' && !br.records.some(function (r) {
+          return r.type === '单品单件' && r.skuLocations && r.skuLocations.size > 0;
+        })) {
+          state.paperStrategy = 'sku';
+          paperStrategyRequested = 'sku';
+          try { localStorage.setItem('wave-paper-strategy', 'sku'); } catch (e) { }
+          status('当前订单文件不含推荐拣货库位，已切回 SKU 均衡。', 'warn');
+        }
         clearData();
         state.records = br.records;
         applyUspsSubdivision(state.records, state.uspsSplit);
@@ -437,6 +550,29 @@
     return togHtml(state, 'data-master="t:' + t + '"', '点击全选/取消「' + UI_TYPE_LABEL[t] + '」类型全部分段') +
       '<span class="type-tog" data-master="t:' + t + '">' + UI_TYPE_LABEL[t] + '</span>';
   }
+  function paperStrategyButtonHtml() {
+    var location = state.paperStrategy === 'location';
+    var disabled = !state.locationReady;
+    var title = disabled
+      ? '库位表未加载，暂只能使用 SKU 均衡'
+      : (location ? '当前：库位优先；点击切换为 SKU 均衡' : '当前：SKU 均衡；点击切换为库位优先');
+    return '<button type="button" class="paper-strategy-btn" data-strategy="' +
+      (location ? 'location' : 'sku') + '"' + (disabled ? ' disabled' : '') +
+      ' aria-label="单件分段策略" title="' + esc(title) + '">单件</button>';
+  }
+  function headerModeButtonHtml() {
+    var merged = !!state.merged;
+    return '<button type="button" class="header-toggle" id="headerModeToggle" data-mode-toggle aria-pressed="' +
+      (merged ? 'true' : 'false') + '" title="当前：' + (merged ? '归并' : '拆分') +
+      '；点击切换渠道模式">渠道<span class="header-state">·' + (merged ? '归并' : '拆分') + '</span></button>';
+  }
+  function headerSortButtonHtml() {
+    var desc = ms().order.sortMode === 'desc';
+    return '<button type="button" class="header-toggle" id="headerSortToggle" data-sort-toggle aria-pressed="' +
+      (desc ? 'true' : 'false') + '" title="当前：' + (desc ? '降序' : '固定') +
+      '；点击切换；手动拖动后再次点击可恢复规则排序">激活<span class="header-state">·' +
+      (desc ? '降序' : '固定') + '</span></button>';
+  }
   function effectiveOrderSum() {
     var m = ms();
     return selectedOrderCount(curAnalysis(), m.sel.channels, m.sel.segs);
@@ -505,11 +641,11 @@
 
     var head = '<tr>' +
       '<th class="left">' + togHtml(chMasterState(), 'data-master="ch"', '点击全选/取消全部渠道') +
-      '<span class="type-tog" data-master="ch">渠道</span></th>' +
-      '<th>激活订单</th>' +
-      '<th title="仅限制爆品分段；单 SKU 超容量规则保持不变">爆品容量</th>' +
+      headerModeButtonHtml() + '</th>' +
+      '<th>' + headerSortButtonHtml() + '</th>' +
+      '<th title="仅限制爆品分段；单 SKU 超容量规则保持不变">容量</th>' +
       '<th>爆品</th>' +
-      '<th title="单件分段数，默认 1；同一 SKU 不拆散，空分段不生成">单件</th>' +
+      '<th class="paper-th">' + paperStrategyButtonHtml() + '</th>' +
       '<th>多件</th>' +
       '<th>混件</th>' +
       '<th>吸收</th>' +
@@ -539,18 +675,27 @@
     animateRenderedMetrics(previousMetrics);
   }
   function renderBar() {
-    var ok = typeof XLSX !== 'undefined';
-    $('engineLabel').textContent = ok ? '' : 'FAIL';
-    $('engineLabel').className = ok ? 'ok' : 'fail';
-    $('engineLabelWrap').style.display = ok ? 'none' : '';
-    $('modeLabel').textContent = state.merged ? '归并' : '拆分';
-    $('modeLabel').className = state.merged ? 'mode-toggle on' : 'mode-toggle';
-    $('modeLabel').setAttribute('aria-pressed', state.merged ? 'true' : 'false');
-    var sortMode = ms().order.sortMode === 'desc' ? 'desc' : 'fixed';
-    $('sortModeLabel').textContent = sortMode === 'desc' ? '降序' : '固定';
-    $('sortModeLabel').className = 'mode-toggle sort-toggle' + (sortMode === 'desc' ? ' on' : '');
-    $('sortModeLabel').setAttribute('aria-pressed', sortMode === 'desc' ? 'true' : 'false');
-    $('sortModeLabel').title = '点击切换渠道排序（固定 / 降序）；手动拖动后再次点击可恢复规则排序';
+    // 解析引擎异常属于问题，写入日志；不再占用侧栏底部固定状态区。
+    if (typeof XLSX === 'undefined' && !engineErrorLogged) {
+      engineErrorLogged = true;
+      wmsLogLine('解析引擎未加载（XLSX 不可用），无法导入或导出订单。', 'failed');
+    }
+    var modeBtn = $('headerModeToggle');
+    if (modeBtn) {
+      var modeState = modeBtn.querySelector('.header-state');
+      if (modeState) modeState.textContent = state.merged ? '·归并' : '·拆分';
+      modeBtn.setAttribute('aria-pressed', state.merged ? 'true' : 'false');
+      modeBtn.title = '当前：' + (state.merged ? '归并' : '拆分') + '；点击切换渠道模式';
+    }
+    var sortBtn = $('headerSortToggle');
+    if (sortBtn) {
+      var sortMode = ms().order.sortMode === 'desc' ? 'desc' : 'fixed';
+      var sortState = sortBtn.querySelector('.header-state');
+      if (sortState) sortState.textContent = sortMode === 'desc' ? '·降序' : '·固定';
+      sortBtn.setAttribute('aria-pressed', sortMode === 'desc' ? 'true' : 'false');
+      sortBtn.title = '当前：' + (sortMode === 'desc' ? '降序' : '固定') + '；点击切换；手动拖动后再次点击可恢复规则排序';
+    }
+    if (typeof wms !== 'undefined' && wms) updateHeaderModeLock();
     $('btnExport').disabled = !state.records.length;
   }
   function render() {
@@ -568,6 +713,20 @@
       newTable.scrollTop = tableTop;
       newTable.scrollLeft = tableLeft;
     }
+    if (typeof wms !== 'undefined' && wms) wmsUpdateRunButton();
+    logPaperWarnings(curAnalysis());
+  }
+  function logPaperWarnings(analysis) {
+    // 库位异常只告警，不阻断；同一计划签名只写一次日志。
+    if (typeof wms === 'undefined' || !wms) return;
+    var warnings = (analysis && analysis.warnings) || [];
+    if (!warnings.length) { state.lastPaperWarningSig = null; return; }
+    var sig = (state.planSignature || '') + '|' + warnings.join('|');
+    if (state.lastPaperWarningSig === sig) return;
+    state.lastPaperWarningSig = sig;
+    var shown = warnings.slice(0, 20).join('、');
+    if (warnings.length > 20) shown += ' 等 ' + warnings.length + ' 个库位';
+    wmsLogLine('单件库位告警：以下库位缺少优先级或无需拣货，相关订单已并入最后一段：' + shown + '。请更新库位表。', 'completed_with_warnings');
   }
 
   /* ---------- 导出 ---------- */
@@ -639,6 +798,7 @@
       if (unit) unit.textContent = '/' + active.length;
       animateMetric(selectedChannelMetric, selected);
     }
+    if (typeof wms !== 'undefined' && wms) wmsUpdateRunButton();
   }
   function setGlyphState(el, state) {
     el.textContent = state === 'on' ? '[x]' : (state === 'some' ? '[~]' : '[ ]');
@@ -766,6 +926,7 @@
     updateMarksInPlace();
   }
   function toggleMerge() {
+    if (typeof wms !== 'undefined' && wms && (wms.active || wms.submitting)) return;
     wmsInvalidateHistoryReads(false);
     state.merged = !state.merged;
     if (state.merged) {
@@ -924,10 +1085,20 @@
       this.value = '';
     });
     $('btnExport').addEventListener('click', doExport);
+    $('dash').addEventListener('click', function (e) {
+      var t = e.target;
+      var modeBtn = t && t.closest ? t.closest('[data-mode-toggle]') : null;
+      if (modeBtn) { if (!modeBtn.disabled) toggleMerge(); return; }
+      var sortBtn = t && t.closest ? t.closest('[data-sort-toggle]') : null;
+      if (sortBtn) { toggleSortMode(); return; }
+      var btn = t && t.closest ? t.closest('.paper-strategy-btn') : null;
+      if (!btn || btn.disabled) return;
+      e.preventDefault();
+      setPaperStrategy(state.paperStrategy === 'sku' ? 'location' : 'sku');
+    });
 
-    /* 渠道模式切换：拆分 / 归并 */
-    $('modeLabel').addEventListener('click', toggleMerge);
-    $('sortModeLabel').addEventListener('click', toggleSortMode);
+    /* 浏览器模式：点击顶栏标题切换 */
+    $('brandBrowserToggle').addEventListener('click', wmsToggleBrowserMode);
 
     /* 页面配置：齿轮按钮 + 配置面板（主题，列表固定向下弹出；字体固定为 Sarasa Mono SC） */
     function validTheme(v) {
@@ -1004,12 +1175,6 @@
       if (!job || !window.confirm('新建任务不会续跑原任务。请先调整输入，避免重复生成已有波次。确定放弃当前重试入口？')) return;
       wms.retryDismissed.add(job.id);
       wmsUpdateRunButton();
-    });
-    $('browserModeVal').addEventListener('click', wmsToggleBrowserMode);
-    ['modeLabel', 'sortModeLabel', 'browserModeVal'].forEach(function (id) {
-      $(id).addEventListener('keydown', function (e) {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); this.click(); }
-      });
     });
     /* 初始显示与标记一致（无头），无需在 wms 对象定义前渲染 */
     fetch('/api/health', { signal: AbortSignal.timeout(1500) })
@@ -1141,6 +1306,7 @@
   (function init() {
     bindEvents();
     render();
+    loadLocationTable();
     window.addEventListener('resize', function () {
       if (state.records.length) render();
     });
@@ -1169,8 +1335,10 @@
   wms.planSnapshots = new Map();
   wms.latestJobs = new Map();
   var detailJobs = new Map(), detailNotices = [], summaryCards = new Map();
+  var logVisibleDays = null, logTodayStamp = null, logScrollTargetDay = null;
   var logPanel = $('wmsPanel'), retryProgress = $('wmsRetryProgress');
   wms.retryDismissed = new Set();
+  wms.retryHinted = new Set();
   wms.followPrint = false;
   try {wms.followPrint = localStorage.getItem('wave-follow-print') === 'on';} catch(e) {}
   function wmsFollowToggleState() {
@@ -1194,9 +1362,38 @@
   }
   function wmsRetryTarget() {
     var job = wms.latestJobs.get(wms.mode);
-    return job && job.checkpoint_version === 1 && !wms.retryDismissed.has(job.id) &&
+    return job && job.checkpoint_version === 1 && !job.retry_job_id && !wms.retryDismissed.has(job.id) &&
       ['generate_waves', 'print_waves'].indexOf(job.mode) >= 0 &&
       ['failed', 'partial'].indexOf(job.status) >= 0 ? job : null;
+  }
+  function wmsRetryHint(job) {
+    if (!job || wms.retryHinted.has(job.id) || job.retry_job_id || job.checkpoint_version !== 1 ||
+        ['failed', 'partial'].indexOf(job.status) < 0 ||
+        ['generate_waves', 'print_waves'].indexOf(job.mode) < 0 ||
+        wms.retryDismissed.has(job.id)) return;
+    wms.retryHinted.add(job.id);
+    var label = WMS_MODE_LABEL[job.mode] || job.mode;
+    var state = job.status === 'partial' ? '部分完成' : '失败';
+    var text = '最近一次' + label + '任务' + state + '；点击“选择重试”后，再点“重试任务”继续原任务。';
+    detailNotices.push({at:new Date().toISOString(),stage:'warn',message:text});
+    renderLogDetails();
+    var line = document.createElement('div');
+    line.className = 'ev warn link retry-hint';
+    line.appendChild(document.createTextNode(text + ' '));
+    var a = document.createElement('a');
+    a.href = '#';
+    a.textContent = '选择重试';
+    a.onclick = function (e) {
+      e.preventDefault();
+      if (wms.active || wms.submitting || wms.retryDismissed.has(job.id)) return;
+      wms.mode = job.mode;
+      wmsRenderModeSel();
+      wmsUpdateRunButton();
+    };
+    line.appendChild(a);
+    var log = $('wmsLog');
+    log.appendChild(line);
+    log.scrollTop = log.scrollHeight;
   }
   async function wmsRetry() {
     var original = wmsRetryTarget();
@@ -1273,12 +1470,34 @@
       btns[i].classList.toggle('sel', btns[i].getAttribute('data-mode') === wms.mode);
     }
   }
+  function paperLimitState() {
+    // 700 只按“激活的单件分段池 size”判断；不做单库位独立规则。
+    if (!state.records.length) return null;
+    if (typeof wms === 'undefined' || !wms || wms.mode !== 'generate_waves') return null;
+    if (wms.active || wms.submitting || wmsRetryTarget()) return null;
+    var a = curAnalysis(), m = ms(), hit = null;
+    a.channels.forEach(function (ch) {
+      if (hit || !m.sel.channels.has(ch.id)) return;
+      ch.byType.paper.forEach(function (seg) {
+        if (hit) return;
+        if (m.sel.segs.has(ch.id + '|' + seg.name) && seg.orderCount > PAPER_SEGMENT_LIMIT) {
+          hit = { channel: ch.id, segment: seg.name, count: seg.orderCount };
+        }
+      });
+    });
+    return hit;
+  }
   function wmsUpdateRunButton() {
     wmsFollowToggleState();
     var run = $('wmsRun');
     var retry = wmsRetryTarget();
-    run.disabled = wms.submitting || (!wms.active && cutoffBusy) || (wms.active ? false : !wms.mode);
+    var limit = paperLimitState();
+    run.disabled = wms.submitting || (!wms.active && cutoffBusy) || (wms.active ? false : (!wms.mode || !!limit));
     run.textContent = wms.active ? '取消任务' : retry ? '重试任务' : '开始任务';
+    run.title = limit
+      ? '单件分段「' + limit.channel + ' / ' + limit.segment + '」有 ' + limit.count +
+        ' 单，超过 WMS 单次 ' + PAPER_SEGMENT_LIMIT + ' 单上限；请增加单件分段数或取消该分段。'
+      : '';
     $('wmsNewTask').hidden = wms.active || !retry;
     $('wmsNewTask').disabled = wms.submitting;
     var tracked = wms.active ? wms.job : retry;
@@ -1289,14 +1508,33 @@
       var total = tracked.mode === 'generate_waves' ? tracked.segments.length : tracked.wave_nos.length;
       progress.textContent = '第 ' + (tracked.attempt || 1) + ' 轮 · 已记录 ' + count + '/' + total;
     }
+    updateHeaderModeLock();
   }
   function wmsRenderBrowserMode() {
-    var el = $('browserModeVal');
-    el.textContent = wms.headless ? '无头' : '有头';
-    el.classList.toggle('on', !wms.headless);
-    el.setAttribute('aria-pressed', wms.headless ? 'false' : 'true');
+    var el = $('brandBrowserToggle');
+    if (!el) return;
+    var headed = !wms.headless;
+    var stateEl = $('brandBrowserState');
+    if (stateEl) stateEl.textContent = headed ? '·有头' : '·无头';
+    el.setAttribute('aria-pressed', headed ? 'true' : 'false');
+    el.setAttribute('aria-label', '浏览器模式：' + (headed ? '有头' : '无头') + '，点击切换');
+    var locked = !!(wms.active || wms.submitting);
+    el.disabled = locked;
+    el.title = '浏览器模式：' + (headed ? '有头' : '无头') + '；点击切换为' +
+      (headed ? '无头' : '有头') + (locked ? '（任务运行中不可切换）' : '');
+  }
+  function updateHeaderModeLock() {
+    var locked = !!(wms && (wms.active || wms.submitting));
+    var modeBtn = $('headerModeToggle');
+    if (modeBtn) {
+      modeBtn.disabled = locked;
+      modeBtn.title = '当前：' + (state.merged ? '归并' : '拆分') + '；点击切换渠道模式' +
+        (locked ? '（任务运行中不可切换）' : '');
+    }
+    wmsRenderBrowserMode();
   }
   function wmsToggleBrowserMode() {
+    if (wms.active || wms.submitting) return;
     wms.headless = !wms.headless;
     wmsRenderBrowserMode();
   }
@@ -1379,6 +1617,13 @@
   function logTimeText(value) {
     return logTimestamp(value)===-Infinity?'—':new Date(value).toLocaleString('zh-CN',{hour12:false});
   }
+  function logDayKey(value) {
+    var stamp=logTimestamp(value);
+    if(stamp===-Infinity) return '';
+    var d=new Date(stamp);
+    return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+  }
+  function logDayText(key) { return key ? key.replace(/-/g,'/') : ''; }
   function renderLogDetails() {
     // 简要栏不等于完整事件存储：详情从 detailJobs、截单历史和页面提示独立组装。
     // 内容签名未变时不重建 DOM；变化时保留滚动位置，避免阅读过程中跳回顶部。
@@ -1402,14 +1647,32 @@
     // 分组按开始时间倒序，组内按事件时间倒序；解析时区偏移后比较，不能比较 ISO 字符串。
     // 截单按实际首条事件排序，但标题时间仍展示截单时刻。无时间事件放末尾，同刻保持原顺序。
     entries.sort(function(a,b){return (b.sortAt===undefined?logTimestamp(b.at):b.sortAt)-(a.sortAt===undefined?logTimestamp(a.at):a.sortAt);});
-    entries.forEach(function(entry){entry.events.sort(function(a,b){return logTimestamp(b.at)-logTimestamp(a.at);});});
-    var signature=JSON.stringify(entries);
+    var today=logDayKey(new Date().toISOString());
+    if(!logVisibleDays || logTodayStamp!==today) {
+      logVisibleDays=new Set([today]);
+      logTodayStamp=today;
+      logScrollTargetDay=null;
+    }
+    entries.forEach(function(entry){
+      entry.day=logDayKey(entry.at)||today;
+      entry.events.sort(function(a,b){return logTimestamp(b.at)-logTimestamp(a.at);});
+    });
+    var days=Array.from(new Set(entries.map(function(e){return e.day;}).filter(function(d){return d && d<=today;}))).sort().reverse();
+    var visibleEntries=entries.filter(function(e){return logVisibleDays.has(e.day);});
+    var nextDay=days.filter(function(d){return !logVisibleDays.has(d);})[0]||null;
+    var signature=JSON.stringify({visible:Array.from(logVisibleDays).sort(),entries:entries});
     if(list.dataset.signature===signature) return;
     list.dataset.signature=signature;
     var panel=$('logDetailsPanel'),scroll=panel.scrollTop;
     list.replaceChildren();
-    entries.forEach(function(entry){
-      var section=document.createElement('section');section.className='log-task';section.dataset.logId=entry.id;
+    if(!visibleEntries.length){
+      var empty=document.createElement('p');
+      empty.className='log-empty';
+      empty.textContent=entries.length?'今天暂无日志。':'暂无任务日志。';
+      list.appendChild(empty);
+    }
+    visibleEntries.forEach(function(entry){
+      var section=document.createElement('section');section.className='log-task';section.dataset.logId=entry.id;section.dataset.logDay=entry.day;
       var title=document.createElement('h3');title.textContent=entry.title;section.appendChild(title);
       var meta=document.createElement('div');meta.className='log-task-meta';meta.textContent=(entry.at?logTimeText(entry.at)+' · ':'')+(entry.attempt?'第 '+entry.attempt+' 轮 · ':'')+entry.events.length+' 条记录';section.appendChild(meta);
       entry.events.forEach(function(ev){
@@ -1425,8 +1688,27 @@
       });
       list.appendChild(section);
     });
-    if(!entries.length) list.textContent='暂无任务日志。';
-    panel.scrollTop=scroll;
+    if(nextDay){
+      var more=document.createElement('button');
+      more.type='button';more.id='logLoadMore';more.className='bb log-load-more';
+      more.textContent='加载更多';
+      more.title='加载 '+logDayText(nextDay)+' 的日志';
+      more.setAttribute('aria-label','加载 '+logDayText(nextDay)+' 的日志');
+      more.onclick=function(){
+        if(!logVisibleDays) return;
+        logVisibleDays.add(nextDay);
+        logScrollTargetDay=nextDay;
+        renderLogDetails();
+      };
+      list.appendChild(more);
+    }
+    if(logScrollTargetDay){
+      var target=list.querySelector('[data-log-day="'+logScrollTargetDay+'"]');
+      if(target) panel.scrollTop += target.getBoundingClientRect().top-panel.getBoundingClientRect().top-12;
+      logScrollTargetDay=null;
+    } else {
+      panel.scrollTop=scroll;
+    }
   }
   var detailFetching=false;
   async function refreshLogDetails() {
@@ -1436,7 +1718,7 @@
       var r=await fetch('/api/jobs',{signal:AbortSignal.timeout(5000)});
       if(!r.ok) throw new Error('HTTP '+r.status);
       var jobs=await r.json();jobs.forEach(function(j){detailJobs.set(j.id,j);});
-      renderLogDetails();$('logDetailsStatus').textContent='任务与事件均按时间倒序，最新在上；时间为本机时区，执行中的记录自动更新。';
+      renderLogDetails();$('logDetailsStatus').textContent='默认显示当天日志；任务与事件按时间倒序，最新在上；滚动到底部可加载前一天。时间为本机时区，执行中的记录自动更新。';
     }catch(e){$('logDetailsStatus').textContent='日志更新失败，已保留现有记录：'+e.message;}
     finally{detailFetching=false;}
   }
@@ -1444,7 +1726,7 @@
     var open=$('logDetailsPanel').hidden;
     $('logDetailsPanel').hidden=!open;$('schedulePanel').hidden=true;$('out').hidden=open;
     $('btnLogDetails').setAttribute('aria-expanded',String(open));$('btnSchedule').setAttribute('aria-expanded','false');
-    if(open){renderLogDetails();refreshLogDetails();}
+    if(open){logVisibleDays=null;logTodayStamp=null;logScrollTargetDay=null;renderLogDetails();refreshLogDetails();}
   };
   setInterval(refreshLogDetails,5000);
   function wmsJobHeaderLine(job) {
@@ -1602,12 +1884,19 @@
     }
   }
   async function wmsHandleTerminal(job) {
+    var wasMode = wms.mode === job.mode;
     wmsRememberJob(job);
+    // 终态不再保留任务模式，避免取消/成功后仍显示“可开始”或看起来像重试。
+    if (wasMode) {
+      wms.mode = null;
+      wmsRenderModeSel();
+    }
     wmsUpdateRunButton();
     // Polling, cancellation responses and restored completed plans share the
     // same once-only result handling; clicking cancel cannot undo completion.
     if (WMS_DONE.indexOf(job.status) === -1 || wms.terminalJobs.has(job.id)) return;
     wms.terminalJobs.add(job.id);
+    if (wasMode && ['failed', 'partial'].indexOf(job.status) >= 0) wmsRetryHint(job);
     if (job.mode === 'generate_waves') {
       if (job.status === 'cancelled' || job.status === 'failed') {
         var confirmed = ((job.result && job.result.segments) || []).filter(function (s) { return s.wave_no; }).length;
@@ -1997,7 +2286,7 @@
       });
       if(epoch!==wms.pollEpoch || wms.active || wms.submitting) return;
       // Adopt only a new linked print attempt; never repeatedly override manual choices.
-      var child=jobs.find(function(j){return j.generation_job_id && followCards.has(j.generation_job_id) && !j.retry_job_id && !followSeen.has(j.id);});
+      var child=jobs.find(function(j){return j.generation_job_id && followCards.has(j.generation_job_id) && !j.retry_job_id && !followSeen.has(j.id) && ['queued','running'].indexOf(j.status)>=0;});
       if(child){
         followSeen.add(child.id);
         wmsStartPolling(child,false);
@@ -2023,7 +2312,19 @@
     if(!ok) cutoffIndicator(null);
     $('wmsSection').style.display = ok ? '' : 'none';
     $('wmsPanel').hidden = !ok;
-    $('wmsDot').className = 'wms-dot ' + (ok ? 'ok' : 'err');
+    if (!ok) {
+      // 日志详情/定时任务按钮随联动区隐藏，断开时必须退回规划页，避免停留在无返回入口的面板。
+      $('logDetailsPanel').hidden = true;
+      $('schedulePanel').hidden = true;
+      $('out').hidden = false;
+      $('btnLogDetails').setAttribute('aria-expanded', 'false');
+      $('btnSchedule').setAttribute('aria-expanded', 'false');
+    }
+    var wmsIndicator = $('wmsExportIndicator');
+    if (wmsIndicator) {
+      wmsIndicator.className = 'wms-export-indicator ' + (ok ? 'ok' : 'err');
+      wmsIndicator.title = ok ? '本地 WMS 服务正常' : '本地 WMS 服务不可用';
+    }
     if (ok) {
       wmsRestore();  // 内部在日志重建完成后追加波次规划导出链接
       if (!wms.recTimer) {
@@ -2045,6 +2346,7 @@
       if (resp.ok) {
         var jobs = (await resp.json()).filter(function(j){return !j.schedule_run_id;});
         if (epoch !== wms.pollEpoch || wms.active || wms.submitting) return;
+        jobs.forEach(function(j){ if(j.generation_job_id) followSeen.add(j.id); });
         if (jobs.length) {
           var log = $('wmsLog');
           // Restore only this task stream. Cutoff records and local notices may
@@ -2065,10 +2367,6 @@
           if (activeJob) wmsStartPolling(activeJob, true);
           else {
             wms.job = jobs[0];
-            if (!wms.mode && jobs[0].checkpoint_version === 1 && ['failed','partial'].indexOf(jobs[0].status) >= 0 && ['generate_waves','print_waves'].indexOf(jobs[0].mode) >= 0) {
-              wms.mode = jobs[0].mode;
-              wmsRenderModeSel();
-            }
             wmsRenderState();
           }
           // 页面离线时已完成的计划也能从提交快照恢复导出，无需重新执行 WMS。
@@ -2076,6 +2374,12 @@
             if (j.mode === 'generate_waves' && WMS_DONE.indexOf(j.status) !== -1 && !wms.terminalJobs.has(j.id)) {
               await wmsHandleTerminal(j);
             }
+          }
+          if (!activeJob) {
+            var latest = jobs.slice().sort(function (a, b) {
+              return new Date(b.created_at || 0) - new Date(a.created_at || 0);
+            })[0];
+            if (latest) wmsRetryHint(latest);
           }
         }
       }
@@ -2087,7 +2391,7 @@
   }
 
   /* 一个每日截单；调度、下载和合并属于后端，只有用户点击才分析。 */
-  var cutoffBusy = false, cutoffLoading = false, cutoffData = null, cutoffDirty = false, cutoffRequest = false;
+  var cutoffBusy = false, cutoffLoading = false, cutoffData = null, cutoffDirty = false, cutoffRequest = false, cutoffLastProblem = null;
   var cutoffLabels = {base:'预导出中',waiting:'等待截单',delta:'增量导出中',merge:'合并校验中',succeeded:'文件已就绪',failed:'失败',missed:'已错过'};
   function revealCutoffLogs() {
     // 移动现有卡片，不复制节点。定位卡片顶部使标题和加载入口同时可见；
@@ -2134,7 +2438,7 @@
       var bytes=await response.arrayBuffer();
       var loaded=await new Promise(function(resolve){handleFile(new File([bytes],run.filename),resolve);});
       if(loaded) {cutoffView(false);wmsLogLine('已加载截单结果：'+cutoffTime(run.cutoff,run.timezone)+'（'+run.timezone+'）。','completed');}
-    } catch(e) {status(e.message,'err');wmsLogLine('截单加载失败：'+e.message,'failed');}
+    } catch(e) {wmsLogLine('截单加载失败：'+e.message,'failed');}
     finally {cutoffLoading=false;wms.submitting=false;$('btnImport').disabled=false;wmsUpdateRunButton();}
   }
   async function cutoffFetch(url, options) {
@@ -2144,11 +2448,12 @@
     return data;
   }
   function cutoffIndicator(data) {
-    var latest=data && data.runs && data.runs[0];
-    var attention=!!(data && (data.error || (latest && ['failed','missed'].indexOf(latest.status)>=0)));
-    var healthy=!!(data && data.config.enabled && !attention);
-    var label=!data?'服务未连接':attention?'需要检查执行记录':!data.config.enabled?'未启用':data.browser_busy?'正在执行':'已启用，调度正常';
-    $('btnSchedule').classList.toggle('scheduled-on',healthy);
+    // 状态点只表示“定时截单服务是否可运行”，不表示单次执行成败。
+    // 单次失败/错过只进执行记录和日志；未启用、调度异常、服务不可达才亮红点。
+    var ready=!!(data && data.config && data.config.enabled && !data.error && data.next_cutoff);
+    var label=!data?'服务未连接':data.error?'调度异常':!data.config.enabled?'未启用（无定时截单）':!data.next_cutoff?'调度异常':data.browser_busy?'正在执行':'已启用，调度正常';
+    $('btnSchedule').classList.toggle('scheduled-on',ready);
+    $('btnSchedule').classList.toggle('schedule-attention',!ready);
     $('btnSchedule').title='定时任务：'+label;
     $('btnSchedule').setAttribute('aria-label','定时任务：'+label);
   }
@@ -2161,6 +2466,8 @@
       $('scheduleAdvance').value=c.advance_minutes;$('scheduleTimezone').value=c.timezone;
     }
     $('scheduleSave').disabled=!!data.error;
+    if(data.error && cutoffLastProblem!==data.error) {wmsLogLine('定时截单调度异常：'+data.error,'failed');cutoffLastProblem=data.error;}
+    else if(!data.error && cutoffLastProblem) cutoffLastProblem=null;
     $('scheduleMessage').textContent=data.error || (c.enabled ? '下次预导出：'+cutoffTime(data.next_base,c.timezone)+'；截单：'+cutoffTime(data.next_cutoff,c.timezone)+'（'+c.timezone+'）' : '定时截单已停用。保存启用后才会执行。');
     var list=$('scheduleRuns');
     var signature=JSON.stringify(data.runs);
@@ -2171,7 +2478,7 @@
         var card=document.createElement('details');card.className='schedule-run';card.dataset.run=run.id;card.open=expanded.indexOf(run.id)>=0;
         var title=document.createElement('summary');title.textContent=cutoffTime(run.cutoff,run.timezone)+' · '+(cutoffLabels[run.status]||run.status)+' · '+run.timezone;card.appendChild(title);
         if(run.status==='succeeded') {var p=document.createElement('p');p.append(cutoffFileLink(run,false),document.createTextNode('　'),cutoffFileLink(run,true));card.appendChild(p);}
-        if(run.status==='failed') {var retry=document.createElement('button');retry.className='bb';retry.textContent='重试失败阶段';retry.onclick=async function(){retry.disabled=true;try{cutoffRender(await cutoffFetch('/api/schedule/runs/'+encodeURIComponent(run.id)+'/retry',{method:'POST'}),false);}catch(e){$('scheduleMessage').textContent=e.message;retry.disabled=false;}};card.appendChild(retry);}
+        if(run.status==='failed') {var retry=document.createElement('button');retry.className='bb';retry.textContent='重试失败阶段';retry.onclick=async function(){retry.disabled=true;try{cutoffRender(await cutoffFetch('/api/schedule/runs/'+encodeURIComponent(run.id)+'/retry',{method:'POST'}),false);}catch(e){$('scheduleMessage').textContent=e.message;wmsLogLine('截单重试失败：'+e.message,'failed');retry.disabled=false;}};card.appendChild(retry);}
         var logs=document.createElement('button');logs.className='bb';logs.textContent='查看日志详情';logs.onclick=function(){$('btnLogDetails').click();};card.appendChild(logs);list.appendChild(card);
       });
     }
@@ -2193,7 +2500,7 @@
     if(cutoffRequest) return;
     cutoffRequest=true;
     try {var data=await cutoffFetch('/api/schedule');if(data && data.config && Array.isArray(data.runs)) cutoffRender(data,true);}
-    catch(e) {cutoffIndicator(null);$('scheduleMessage').textContent='定时服务不可用：'+e.message;$('scheduleSave').disabled=true;}
+    catch(e) {cutoffIndicator(null);var problem='定时服务不可用：'+e.message;if(cutoffLastProblem!==problem){wmsLogLine(problem,'failed');cutoffLastProblem=problem;}$('scheduleMessage').textContent=problem;$('scheduleSave').disabled=true;}
     finally {cutoffRequest=false;}
   }
   function cutoffInit() {
@@ -2204,10 +2511,10 @@
     try {
       var data=await cutoffFetch('/api/schedule',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:$('scheduleEnabled').checked,cutoff_time:$('scheduleTime').value,advance_minutes:Number($('scheduleAdvance').value),timezone:$('scheduleTimezone').value.trim()})});
       cutoffDirty=false;cutoffRender(data,true);wmsLogLine('定时截单配置已保存，范围为截单时刻往前一周。','completed');
-    }catch(err){$('scheduleMessage').textContent=err.message;}
+    }catch(err){$('scheduleMessage').textContent=err.message;wmsLogLine('定时截单配置保存失败：'+err.message,'failed');}
     finally{$('scheduleSave').disabled=false;}
   };
-  if(location.protocol!=='file:') {cutoffRefresh();setInterval(function(){if(wms.available) cutoffRefresh();},5000);}
+  if(typeof location!=='undefined' && location.protocol!=='file:') {cutoffRefresh();setInterval(function(){if(wms.available) cutoffRefresh();},5000);}
   }
   cutoffInit();
 
@@ -2219,6 +2526,7 @@
     state: state,
     wms: wms,
     wmsSubmit: wmsSubmit,
+    wmsUpdateRunButton: wmsUpdateRunButton,
     wmsSyncWaveRecords: wmsSyncWaveRecords,
     wmsPollOnce: wmsPollOnce,
     wmsRestore: wmsRestore,
@@ -2227,6 +2535,9 @@
     getAnalysis: getAnalysis,
     toggleOrdinaryEvolution: toggleOrdinaryEvolution,
     toggleUspsSubdivision: toggleUspsSubdivision,
+    setPaperStrategy: setPaperStrategy,
+    setUnifiedParam: setUnified,
+    paperLimitState: paperLimitState,
     buildExportBuffer: wmsBuildExportBuffer,
     buildExportNow: function () {
       return currentExportData();

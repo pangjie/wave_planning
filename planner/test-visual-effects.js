@@ -69,7 +69,10 @@ T.withChrome({}, async chrome => {
   const interaction = JSON.parse(await evalJs(`(function(){
     var metric=document.getElementById('selectedOrderMetric');
     var before=Number(metric.dataset.rollValue);
-    var seg=document.querySelector('#dash .prow[data-ch="USPS"] .seg-line.on[data-seg]');
+    // USPS 默认细分为 H/G，渠道集合随细分开关变化；任取一个可被普通吸收的非 CBT/CBS 渠道。
+    var rows=Array.prototype.slice.call(document.querySelectorAll('#dash .prow[data-ch]'));
+    var row=rows.filter(function(r){return ['CBT','CBS','普通','未识别'].indexOf(r.dataset.ch)<0;})[0];
+    var seg=row.querySelector('.seg-line.on[data-seg]');
     seg.click();
     return JSON.stringify({
       before:before,
@@ -85,7 +88,7 @@ T.withChrome({}, async chrome => {
   T.assert(interaction.target < interaction.before, '关闭分段后激活订单目标值应下降');
   T.assert(interaction.rolling && interaction.hasNumber, '概览数字未触发滚动动画');
   T.assert(interaction.particles === 0 && !interaction.interactionLayer, '分段、渠道和导入点击不得再产生粒子层');
-  T.assert(interaction.sourceChannel === 'USPS', '进退化测试必须关闭一个可被普通渠道吸收的非 CBT/CBS 分段');
+  T.assert(['CBT','CBS','普通','未识别'].indexOf(interaction.sourceChannel) < 0, '进退化测试必须关闭一个可被普通渠道吸收的非 CBT/CBS 分段');
   await T.sleep(650);
   T.assert(await evalJs(`document.querySelector('#selectedOrderMetric .metric-number').textContent`) === String(interaction.target), '数字滚动结束值不正确');
 

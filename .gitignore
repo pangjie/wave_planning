@@ -16,6 +16,7 @@ wms/project/dist/
 wms/project/data/browser-profile/
 wms/project/data/jobs.json
 wms/project/data/wave-records.json
+wms/project/data/cutoff-schedule.json
 wms/project/data/step-control.json
 wms/project/data/service-*.pid
 wms/project/data/service-*.pid.identity.json
@@ -25,6 +26,11 @@ wms/project/logs/
 wms/project/nohup.out
 wms/project/downloads/*
 wms/project/outputs/*
+
+# 库位表属于内部数据，不进公开仓库；只在本地生成/运行时复制
+/planner/location-source/
+/planner/location-priority.local.json
+/wms/project/frontend/dist/location-priority.json
 
 # 测试残留
 planner/tmp/

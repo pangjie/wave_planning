@@ -13,12 +13,10 @@
 })();
 </script>
 <div class="shell">
-  <!-- 顶栏面板开关共用按钮形制；日志详情与定时配置复用右侧主内容区域。 -->
+  <!-- 顶栏动作与侧栏任务按钮共用 .bb 形制；日志详情与定时配置复用右侧主内容区域。 -->
   <header class="app-header">
-    <div class="brand"><strong>波次规划工具</strong></div>
+    <div class="brand"><button type="button" class="brand-title" id="brandBrowserToggle" aria-pressed="false" title="浏览器模式：无头；点击切换有头"><span class="brand-name">波次规划工具</span><span class="brand-state" id="brandBrowserState">·无头</span></button></div>
     <div class="header-actions">
-      <button class="bb logs" id="btnLogDetails" aria-expanded="false" aria-controls="logDetailsPanel" title="查看完整任务日志">日志详情</button>
-      <button class="bb schedule" id="btnSchedule" aria-expanded="false" aria-controls="schedulePanel" title="定时任务：未启用"><span class="schedule-indicator" aria-hidden="true"></span>定时任务</button>
       <button class="bb import" id="btnImport" title="导入订单 Excel">导入订单</button>
       <button class="bb export" id="btnExport" title="导出 Excel" disabled>导出方案</button>
       <span class="cfg-wrap">
@@ -36,27 +34,9 @@
 
   <div class="bodywrap">
     <aside class="side">
-      <div class="side-intro">
-        <h2>规划设置</h2>
-      </div>
-      <div class="side-row mode-card side-mode">
-        <span class="mode-copy"><span class="dim">渠道模式</span></span>
-        <span class="mode-actions">
-          <span id="modeLabel" class="mode-toggle" role="button" aria-pressed="false" tabindex="0" title="点击切换渠道模式（拆分 / 归并）">拆分</span>
-          <span id="sortModeLabel" class="mode-toggle sort-toggle" role="button" aria-pressed="false" tabindex="0" title="点击切换渠道排序（固定 / 降序）">固定</span>
-        </span>
-      </div>
-      <div class="side-row mode-card side-browser">
-        <span class="mode-copy"><span class="dim">浏览器模式</span></span>
-        <span id="browserModeVal" class="mode-toggle" role="button" aria-pressed="false" tabindex="0" title="点击在有头 / 无头之间切换（有头=弹出浏览器可见操作）">无头</span>
-      </div>
       <div class="side-row side-wms" id="wmsSection" style="display:none">
-        <div class="side-wms-head">
-          <strong>WMS 自动化</strong>
-          <span class="wms-dot" id="wmsDot" title="本地服务状态"></span>
-        </div>
         <div class="wms-mode-grid">
-          <button class="bb wms-mode" id="wmsExport" data-mode="export" title="选中后点击下方「开始任务」：在 WMS 中提交一次正式订单导出并自动导入全量订单分析">全量分析</button>
+          <button class="bb wms-mode" id="wmsExport" data-mode="export" title="选中后点击下方「开始任务」：在 WMS 中提交一次正式订单导出并自动导入全量订单分析"><span class="wms-export-indicator" id="wmsExportIndicator" aria-hidden="true"></span>全量分析</button>
           <div class="wms-generate-wrap">
             <button class="bb wms-mode" id="wmsGenerate" data-mode="generate_waves" title="选中后点击下方「开始任务」：按网页勾选的分段顺序逐段生成波次并回填波次号">生成波次</button>
             <button class="bb follow-print-toggle" id="wmsFollowPrint" aria-label="跟随打印单件和混件" aria-pressed="false" title="跟随打印已关闭"><svg viewBox="0 0 24 24" width="13" height="13" aria-hidden="true"><path d="M6 8V3h12v5M6 17H3V9h18v8h-3M6 14h12v7H6z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg></button>
@@ -64,10 +44,13 @@
           <button class="bb wms-mode" id="wmsPrint" data-mode="print_waves" title="选中后点击下方「开始任务」：按下方波次号生成拣货单 PDF 并合并">打印波次</button>
           <button class="bb wms-mode" id="wmsPick" data-mode="pick_waves" title="选中后点击下方「开始任务」：批量拣货，下方留空=全部待拣货波次，或每行一个波次号">批量拣货</button>
         </div>
-        <label class="wave-input-label" for="wmsWaves">波次号清单</label>
-        <textarea id="wmsWaves" rows="4" spellcheck="false" placeholder="每行一个波次号&#10;打印留空=当前规划已生成的单件、混件&#10;批量拣货留空=全部待拣货"></textarea>
-        <button class="bb run" id="wmsRun" disabled title="选中上方任一功能后点击开始；任务运行中点击可终止">开始任务</button>
-        <button class="bb" id="wmsNewTask" hidden title="放弃当前重试入口，使用新的输入开始任务">新建任务</button>
+        <textarea id="wmsWaves" rows="4" spellcheck="false" aria-label="波次号清单" placeholder="每行一个波次号&#10;打印留空=当前规划已生成的单件、混件&#10;批量拣货留空=全部待拣货"></textarea>
+        <div class="side-actions">
+          <button class="bb run" id="wmsRun" disabled title="选中上方任一功能后点击开始；任务运行中点击可终止">开始任务</button>
+          <button class="bb side-utility" id="btnSchedule" aria-expanded="false" aria-controls="schedulePanel" title="定时任务：未启用"><span class="schedule-indicator" aria-hidden="true"></span>定时任务</button>
+          <button class="bb side-utility" id="btnLogDetails" aria-expanded="false" aria-controls="logDetailsPanel" title="查看完整任务日志">日志详情</button>
+          <button class="bb" id="wmsNewTask" hidden title="放弃当前重试入口，使用新的输入开始任务">新建任务</button>
+        </div>
         <div class="wms-log" id="wmsLog" aria-live="polite">
           <div class="wms-panel" id="wmsPanel" hidden>
             <div class="wms-panel-bar"><span class="wms-state" id="wmsState">空闲</span><span class="wms-msg" id="wmsMsg"></span></div>
@@ -75,16 +58,11 @@
           </div>
         </div>
       </div>
-      <div class="side-spacer"></div>
-      <div class="side-row side-status" aria-live="polite">
-        <span class="status" id="status"></span>
-        <span id="engineLabelWrap"><span class="dim">解析引擎</span><span id="engineLabel" class="fail">检测中</span></span>
-      </div>
     </aside>
     <main class="term">
       <section id="logDetailsPanel" class="schedule-panel" hidden>
         <h2>日志详情</h2>
-        <p id="logDetailsStatus" role="status">任务与事件均按时间倒序，最新在上；时间为本机时区，执行中的记录自动更新。</p>
+        <p id="logDetailsStatus" role="status">默认显示当天日志；任务与事件按时间倒序，最新在上；滚动到底部可加载前一天。时间为本机时区，执行中的记录自动更新。</p>
         <div id="logDetailsContent"></div>
       </section>
       <section id="schedulePanel" class="schedule-panel" hidden>

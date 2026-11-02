@@ -241,6 +241,10 @@ test('Retry: uses failed job identity, ignores changed page inputs, coalesces cl
   pending.resolve(response(child)); await first;
   assert.equal(h.elements.get('wmsRun').textContent,'取消任务');
   await h.api.wmsPollOnce();
+  assert.equal(h.elements.get('wmsRun').textContent,'开始任务');
+  assert.equal(h.elements.get('wmsRun').disabled,true);
+  h.api.wms.mode='generate_waves';
+  h.api.wmsUpdateRunButton();
   assert.equal(h.elements.get('wmsRun').textContent,'重试任务');
   assert.equal(h.api.wms.latestJobs.get('generate_waves').id,child.id);
   assert.equal(h.requests.filter(r=>r.url==='/api/jobs' && r.method==='POST').length,0);

@@ -3,7 +3,7 @@
 const path=require('path');
 const T=require('./test-helpers.js');
 const {createMockServer}=require('./mock-wms-server.js');
-const run={id:'cutoff-1',cutoff:'2026-10-27T11:00:00Z',timezone:'America/New_York',status:'succeeded',
+const run={id:'cutoff-1',cutoff:new Date().toISOString(),timezone:'America/New_York',status:'succeeded',
   filename:'截单订单_2026-10-27_0700.xlsx',events:[{at:'2026-10-27T11:01:00Z',message:'合并校验完成，点击加载分析。'}],current_events:[]};
 const schedule={config:{enabled:false,cutoff_time:'07:00',timezone:'America/New_York',advance_minutes:30},
   next_cutoff:null,next_base:null,error:null,browser_busy:false,runs:[run]};
@@ -17,18 +17,26 @@ const mock=createMockServer({samplePath:T.paths(__dirname).sample,
       await d.enablePage();await d.send('Page.navigate',{url:site+'/'});
       await d.poll(`!!document.querySelector('#cutoff-log-cutoff-1 a')`,true);
       T.assert(await d.evalJs('window.__dshTest.state.records.length')===0,'打开页面不自动加载');
-      T.assert(await d.evalJs(`!document.getElementById('btnSchedule').classList.contains('scheduled-on')`),'停用无状态点');
+      T.assert(await d.evalJs(`!document.getElementById('btnSchedule').classList.contains('scheduled-on') && document.getElementById('btnSchedule').classList.contains('schedule-attention')`),'停用应显示红点（没有定时截单）');
       schedule.config.enabled=true;
+      schedule.next_cutoff='2026-10-28T11:00:00Z';
+      schedule.next_base='2026-10-28T10:30:00Z';
       await d.evalJs('window.__dshTest.cutoffRefresh().then(()=>true)');
-      T.assert(await d.evalJs(`document.getElementById('btnSchedule').classList.contains('scheduled-on')`),'启用正常显示状态点');
+      T.assert(await d.evalJs(`document.getElementById('btnSchedule').classList.contains('scheduled-on') && !document.getElementById('btnSchedule').classList.contains('schedule-attention')`),'启用正常显示状态点');
+      await T.sleep(350);
+      T.assert(await d.evalJs(`getComputedStyle(document.querySelector('#btnSchedule .schedule-indicator')).backgroundColor`)!=='rgb(28, 23, 48)','正常状态点必须是绿色而不是页面底色');
       run.status='failed';
       await d.evalJs('window.__dshTest.cutoffRefresh().then(()=>true)');
-      T.assert(await d.evalJs(`!document.getElementById('btnSchedule').classList.contains('scheduled-on')`),'失败不显示正常状态');
+      // 单次失败不影响服务可用指示灯，但必须写入执行记录/日志。
+      T.assert(await d.evalJs(`document.getElementById('btnSchedule').classList.contains('scheduled-on') && !document.getElementById('btnSchedule').classList.contains('schedule-attention')`),'单次失败不应改变服务指示灯');
+      T.assert((await d.evalJs(`document.getElementById('scheduleRuns').textContent`)).indexOf('失败')>=0,'失败应写入执行记录');
+      T.assert((await d.evalJs(`document.getElementById('wmsLog').textContent`)).indexOf('截单')>=0,'失败应写入日志');
       run.status='succeeded';schedule.error='调度异常';
       await d.evalJs('window.__dshTest.cutoffRefresh().then(()=>true)');
-      T.assert(await d.evalJs(`!document.getElementById('btnSchedule').classList.contains('scheduled-on')`),'调度异常不显示正常状态');
+      T.assert(await d.evalJs(`!document.getElementById('btnSchedule').classList.contains('scheduled-on') && document.getElementById('btnSchedule').classList.contains('schedule-attention')`),'调度异常应显示异常状态');
       schedule.error=null;
       await d.evalJs('window.__dshTest.cutoffRefresh().then(()=>true)');
+      T.assert(await d.evalJs(`document.getElementById('btnSchedule').classList.contains('scheduled-on') && !document.getElementById('btnSchedule').classList.contains('schedule-attention')`),'调度恢复后指示灯恢复绿色');
       T.assert(await d.evalJs(`!document.querySelector('#cutoff-log-cutoff-1 details')`),'侧栏不包含详细日志');
       await d.evalJs(`document.getElementById('btnLogDetails').click();true`);
       T.assert(await d.evalJs(`!document.getElementById('logDetailsPanel').hidden && document.getElementById('out').hidden`),'打开日志详情页面');
